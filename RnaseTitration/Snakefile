@@ -1,0 +1,304 @@
+###########
+#author: John E. Froberg
+#Copyright: 11/20/2020
+#takes in single-end riboprofiling data specified by SAMPS
+#extracts the first 12 nt of R2 as the UMI with umi-tools
+#cuts out the Illumina small RNA adapter from R1 with cutadapt
+#aligns to rRNA using STAR and writes the unmapped reads to fq.gz files
+#aligns the unmapped reads to mm10 using STAR, indexes the BAM files
+#also aligns to the transcriptome to enable analysis with RiboWaltz
+#deduplicates using umi-tools.
+#uses featureCounts, samtools, and unix scripts to generate read length distributions 
+#Runs an Rmarkdown script to plot read length distros, coverage over CDS, UTRs, 
+#TPM and raw count gene distributions, and run RiboWaltz to evaluate 3-nt periodicity
+##########
+
+configfile: "config.yaml"
+
+rule all:
+	input:
+		#expand("merged/{sample}_R1.fastq", sample=config["samples"]),
+		#expand("merged/{sample}_R2.fastq", sample=config["samples"]),
+		expand("merged/{sample}_R1.fastq.gz", sample=config["samples"]),
+		expand("merged/{sample}_R2.fastq.gz", sample=config["samples"]),
+		expand("merged_filtered/{sample}_R1.fastq.gz", sample=config["samples"]),
+		expand("merged_filtered/{sample}_R2.fastq.gz", sample=config["samples"]),
+		expand("umi_extracted/{sample}_R1.fastq.gz", sample=config["samples"]),
+		expand("umi_extracted/{sample}_R2.fastq.gz", sample=config["samples"]),
+		expand("umi_extracted/{sample}.log", sample=config["samples"]),
+		expand(["preprocess/{sample}_R1.fastq.gz"], sample=config["samples"]),
+		expand(["rRNA_align/{sample}.Aligned.out.bam"], sample=config["samples"]),
+		expand(["rRNA_align/{sample}.norRNA.fastq.gz"], sample=config["samples"]),
+		expand(["toTranscriptomeBams/{sample}.Aligned.sortedByCoord.out.bam"], sample=config["samples"]),
+		expand(["toTranscriptomeBams/{sample}.Aligned.toTranscriptome.out.bam"], sample=config["samples"]),
+		expand(["toTranscriptomeBams/{sample}.Aligned.toTranscriptome.sorted.out.bam"], sample=config["samples"]),
+		expand(["toTranscriptomeBams/{sample}.Aligned.toTranscriptome.sorted.out.bam.bai"], sample=config["samples"]),
+		expand(["toTranscriptomeBams/{sample}.Aligned.sortedByCoord.out.bam.bai"], sample=config["samples"]),
+		expand(["dedupBams/{sample}.Aligned.sortedByCoord.out.dedup.bam"], sample=config["samples"]),
+		expand(["dedupBams/{sample}.log"], sample=config["samples"]),
+		expand(["dedupBams/{sample}.Aligned.toTranscriptome.out.sorted.dedup.bam"], sample=config["samples"]),
+		expand(["dedupBams/{sample}.transcriptome.log"], sample=config["samples"]),
+		"dedupBams/featureCounts_CDS_summary.txt",
+		"dedupBams/featureCounts_3pUTR_summary.txt",
+		"dedupBams/featureCounts_5pUTR_summary.txt",
+		"toTranscriptomeBams/featureCounts_CDS_summary.txt",
+		"toTranscriptomeBams/featureCounts_3pUTR_summary.txt",
+		"toTranscriptomeBams/featureCounts_5pUTR_summary.txt",
+		"dedup_lengthDistroTidy.txt",
+		"nodedup_lengthDistroTidy.txt",
+		"nodedup_RPbams",
+		"dedup_RPbams",
+		"nodedup_RPplots",
+		"dedup_RPplots",
+		"nodedup.html",
+		"dedup.html",
+		
+#Note: Some runs are sequenced on a single lane. If that's the case, then name the fastq folder
+#"merged", so that the Snakefile does not try to run rule merge_fqs when 1) it doesn't need to
+#2) the L001 and L002 files don't exist. 
+
+#rule merge_fqs:
+#	input:
+#		lane1_R1="fastq/{sample}_L001_R1_001.fastq.gz",
+#		lane2_R1="fastq/{sample}_L002_R1_001.fastq.gz",
+#		lane1_R2="fastq/{sample}_L001_R2_001.fastq.gz",
+#		lane2_R2="fastq/{sample}_L002_R2_001.fastq.gz",
+#	output:
+#		R1_merged="merged/{sample}_R1.fastq.gz",
+#		R2_merged="merged/{sample}_R2.fastq.gz"
+#	shell:
+#		"""zcat {input.lane1_R1} {input.lane2_R1} | gzip > {output.R1_merged}; 
+#		zcat {input.lane1_R2} {input.lane2_R2} | gzip > {output.R2_merged}"""
+
+# rule gzip_merged:
+# 	input:
+# 		R1_merged="merged/{sample}_R1.fastq",
+# 		R2_merged="merged/{sample}_R2.fastq"
+# 	output:
+# 		R1="merged/{sample}_R1.fastq.gz",
+# 		R2="merged/{sample}_R2.fastq.gz"
+# 	shell:
+# 		"gzip -c {input.R1_merged} > {output.R1}; gzip -c {input.R2_merged} > {output.R2}"
+
+###Filter reads that are at least 12 nt long. This step is necessary because some small
+#portion of reads are shorter than the 12 nt UMI on read 2 and cause umi_extract to fail
+rule filter_12nt:
+	input:
+	  R1="merged/{sample}_R1.fastq.gz",
+	  R2="merged/{sample}_R2.fastq.gz",
+	output:
+	  R1="merged_filtered/{sample}_R1.fastq.gz",
+	  R2="merged_filtered/{sample}_R2.fastq.gz",
+	  report="merged_filtered/{sample}_report.txt"
+	shell:
+	  """source activate python_3.4_env; cutadapt --minimum-length=12 --pair-filter=any  -o {output.R1} -p {output.R2} {input.R1} {input.R2} > {output.report}"""
+
+#This pipeline uses umi_tools to extract the first 12 nt of read2 as this is the UMI
+#Must create the python environment "umi_tools" before running.	
+rule umi_extract:
+	input:
+		R1="merged_filtered/{sample}_R1.fastq.gz",
+		R2="merged_filtered/{sample}_R2.fastq.gz"
+	output:
+		R1="umi_extracted/{sample}_R1.fastq.gz",
+		R2="umi_extracted/{sample}_R2.fastq.gz",
+		log="umi_extracted/{sample}.log"
+	shell:
+		"""source activate umi_tools;
+		umi_tools extract --extract-method=string --bc-pattern=NNNNNNNNNNNN -I {input.R2} -S {output.R2} --read2-in={input.R1} --read2-out={output.R1} -L {output.log};
+		"""
+
+#cutadapt to remove adapter sequences from R1. Added cutadapt v2.8 to one of my python
+#environments because the FASRC cluster version of cutadapt is incompatible with the version
+#needed to run snakemake.
+rule cutadapt:
+	input:
+		"umi_extracted/{sample}_R1.fastq.gz"
+	output:
+		"preprocess/{sample}_R1.fastq.gz"
+	shell: #added cutadapt v2.8 to the python_3.4_env. The fasrc cutadapt module is incompatible with python v3.6 which is what snakemake requires.
+		"source activate python_3.4_env; cutadapt -a AACTGTAGGCACCATCAAT -o {output} {input} > report.txt"
+
+#align R1 to mm10 rRNA sequences using STAR. Store reads that fail to map in ".norRNA.fastq" file
+rule rRNA_align:
+	input:
+		"preprocess/{sample}_R1.fastq.gz"
+	output:
+		bam="rRNA_align/{sample}.Aligned.out.bam",
+		fq="rRNA_align/{sample}.norRNA.fastq.gz"
+	params:
+		modules=config["star2rRNA"]["modules"],
+		reference=config["star2rRNA"]["reference"],
+		flags=config["star2rRNA"]["flags"],
+		flags2=config["star2rRNA"]["flags2"]
+	shell:
+		"""module load {params.modules}; 
+		STAR {params.flags} {params.flags2} --genomeDir {params.reference} --readFilesIn {input} --outFileNamePrefix rRNA_align/{wildcards.sample}.;
+		mv rRNA_align/{wildcards.sample}.Unmapped.out.mate1 rRNA_align/{wildcards.sample}.norRNA.fastq;
+		gzip rRNA_align/{wildcards.sample}.norRNA.fastq
+		"""
+#Perform transcriptome alignment using STAR. This produces both ".sortedByCoord.out" bams
+#Which are alignments to the genome and can be easily run through featureCounts to build
+#gene tables and visualized in IgV, as well as "toTranscriptome.sorted.out" bams which
+#are input for RiboWaltz ribosome profiling QC
+rule transcriptome_align:
+	input:
+		"rRNA_align/{sample}.norRNA.fastq.gz"
+	output:
+		"toTranscriptomeBams/{sample}.Aligned.sortedByCoord.out.bam",
+		"toTranscriptomeBams/{sample}.Aligned.sortedByCoord.out.bam.bai",
+		"toTranscriptomeBams/{sample}.Aligned.toTranscriptome.out.bam",
+		"toTranscriptomeBams/{sample}.Aligned.toTranscriptome.sorted.out.bam",
+		"toTranscriptomeBams/{sample}.Aligned.toTranscriptome.sorted.out.bam.bai",
+	params:
+		STARmod=config["star2transcriptome"]["STARmod"],
+		samMod=config["star2transcriptome"]["samMod"],
+		reference=config["star2transcriptome"]["reference"],
+		flags=config["star2transcriptome"]["flags"],
+		flags2=config["star2transcriptome"]["flags2"],
+		gtf=config["star2transcriptome"]["gtf"],
+		dir="toTranscriptomeBams"
+	shell:
+		"""module load {params.STARmod};
+		module load {params.samMod};
+		STAR {params.flags} {params.flags2} --sjdbGTFfile {params.gtf} --genomeDir {params.reference} --readFilesIn {input} --outFileNamePrefix {params.dir}/{wildcards.sample}.;
+		samtools index {params.dir}/{wildcards.sample}.Aligned.sortedByCoord.out.bam;
+		samtools sort -o {params.dir}/{wildcards.sample}.Aligned.toTranscriptome.sorted.out.bam {params.dir}/{wildcards.sample}.Aligned.toTranscriptome.out.bam;
+		samtools index {params.dir}/{wildcards.sample}.Aligned.toTranscriptome.sorted.out.bam
+		"""
+		
+
+#complete the deduplication using umi_tools to collapse reads with the smae alignment coordinates
+#and same UMI. Run first on genomic alignments, then on transcriptomic alignments.
+#Using --method=unique because memory usage has been very large with default parameters.				
+rule dedup:
+	input:
+		"toTranscriptomeBams/{sample}.Aligned.sortedByCoord.out.bam"
+	output:
+		bam="dedupBams/{sample}.Aligned.sortedByCoord.out.dedup.bam",
+		log="dedupBams/{sample}.log"
+	params:
+		dir="dedupBams"
+	shell:
+		"""source activate umi_tools;
+		umi_tools dedup --method=unique --stdin={input} --log={output.log} > {output.bam}"""
+
+rule dedup_transcriptome:
+	input:
+		"toTranscriptomeBams/{sample}.Aligned.toTranscriptome.sorted.out.bam"
+	output:
+		bam="dedupBams/{sample}.Aligned.toTranscriptome.out.sorted.dedup.bam",
+		log="dedupBams/{sample}.transcriptome.log"
+	params:
+		dir="dedupBams"
+	shell:
+		"""source activate umi_tools;
+		umi_tools dedup --method=unique --stdin={input} --log={output.log} > {output.bam}"""
+		
+
+		
+#run featureCounts to count the numbers of reads aligning to the CDS, 5', 3' UTRs of each gene
+rule featureCounts:
+	input:
+		expand(["dedupBams/{sample}.Aligned.sortedByCoord.out.dedup.bam"], sample=config["samples"])
+	output:
+		CDS="dedupBams/featureCounts_CDS_summary.txt",
+		three_prime_utr="dedupBams/featureCounts_3pUTR_summary.txt",
+		five_prime_utr="dedupBams/featureCounts_5pUTR_summary.txt"
+	params:
+		gtf=config["featureCounts"]["gtf"],
+		FCmod=config["featureCounts"]["modules"]
+	shell:
+		"""module load {params.FCmod}
+		featureCounts -a {params.gtf} -o {output.CDS} -t CDS {input}
+		featureCounts -a {params.gtf} -o {output.three_prime_utr} -t three_prime_utr {input}
+		featureCounts -a {params.gtf} -o {output.five_prime_utr} -t five_prime_utr {input}"""
+
+#compute the length distributions over CDS, UTRs and various non-coding features. Requires
+#a path to the shell script "makeLengthDistros_v2.sh", which uses featureCounts to match
+#reads to annotations in the gtf reference, creating a separate bamfile for each annotation,
+#then uses samtools to extract the lengths of each aligned read. 		
+rule lengthDistros:
+	input:
+		expand(["dedupBams/{sample}.Aligned.sortedByCoord.out.dedup.bam"], sample=config["samples"])
+	params:
+		modules=config["lengthDistros"]["modules"],
+		gtf=config["lengthDistros"]["gtf"],
+		script=config["lengthDistros"]["script"],
+		dedup="dedupBams",
+		nodedup="toTranscriptomeBams"
+	output:
+		dedup="dedup_lengthDistroTidy.txt",
+		nodedup="nodedup_lengthDistroTidy.txt"
+	shell:
+		"""module load {params.modules};
+		{params.script} {params.gtf} {params.dedup} {output.dedup};
+		{params.script} {params.gtf} {params.nodedup} {output.nodedup}"""
+		
+#runs featureCounts on the raw data without duplicate removal. 		
+rule featureCounts_noDedup:
+	input:
+		expand(["toTranscriptomeBams/{sample}.Aligned.sortedByCoord.out.bam"], sample=config["samples"])
+	output:
+		CDS="toTranscriptomeBams/featureCounts_CDS_summary.txt",
+		three_prime_utr="toTranscriptomeBams/featureCounts_3pUTR_summary.txt",
+		five_prime_utr="toTranscriptomeBams/featureCounts_5pUTR_summary.txt"
+	params:
+		gtf=config["featureCounts"]["gtf"],
+		FCmod=config["featureCounts"]["modules"]
+	shell:
+		"""module load {params.FCmod}
+		featureCounts -a {params.gtf} -o {output.CDS} -t CDS {input}
+		featureCounts -a {params.gtf} -o {output.three_prime_utr} -t three_prime_utr {input}
+		featureCounts -a {params.gtf} -o {output.five_prime_utr} -t five_prime_utr {input}"""
+
+#This rules runs a *.Rmd file that performs the QC and clustering analysis for the ribosome
+#profiling data sets. First, it runs "separateBams.sh", a shell script that copies and renames
+#the bams for analysis to shorter names for easier reading. Then it runs "LengthsCountsCov_RiboWaltz_v2.Rmd"
+#This is an Rmarkdown file that generates a variety of lengthDistro plots, plots of read coverage over CDS,
+#UTRs, TPM-scaled and raw count distributions, and runs RiboWaltz to evaluate the 3-nt periodicity of the data sets.
+#The way this is done is that Snakemake calls "compile_v2.r", which is a simple R script that reads in the global
+#variables for analysis and loads the required packages, then runs the Rmarkdown script. The packages listed in compile_v2.r
+#must be installed in the appropriate library location (specified by the R_LIBs path in config.yaml) before running.
+
+rule Rmd:
+	input:
+		nodedup_CDS="toTranscriptomeBams/featureCounts_CDS_summary.txt",
+		nodedup_UTR5="toTranscriptomeBams/featureCounts_5pUTR_summary.txt",
+		nodedup_UTR3="toTranscriptomeBams/featureCounts_3pUTR_summary.txt",
+		dedup_CDS="dedupBams/featureCounts_CDS_summary.txt",
+		dedup_UTR5="dedupBams/featureCounts_5pUTR_summary.txt",
+		dedup_UTR3="dedupBams/featureCounts_3pUTR_summary.txt",
+		dedup_length="dedup_lengthDistroTidy.txt",
+		nodedup_length="nodedup_lengthDistroTidy.txt"
+	output:
+		ND_RPbams=directory("nodedup_RPbams"),
+		dedup_RPbams=directory("dedup_RPbams"),
+		ND_RPplots=directory("nodedup_RPplots"),
+		dedup_RPplots=directory("dedup_RPplots"),
+		nodedup_html="nodedup.html",
+		dedup_html="dedup.html",
+	params:
+		metadata=config["Rmd"]["metadata"],
+		modules=config["Rmd"]["modules"],
+		Rscript=config["Rmd"]["Rscript"],
+		shell_script=config["Rmd"]["shell_script"],
+		R_LIBS=config["Rmd"]["R_LIBS"],
+		Rmd=config["Rmd"]["Rmd"],
+		ND_suffix="Aligned.toTranscriptome.out.bam",
+		dedup_suffix="Aligned.toTranscriptome.out.sorted.dedup.bam",
+		gtf=config["Rmd"]["gtf"],
+		dedup_bams="dedupBams",
+		ND_bams="toTranscriptomeBams",
+	shell:
+		"""module load {params.modules};
+		workDir=$(pwd);
+		{params.shell_script} {params.metadata} {params.dedup_bams} {params.dedup_suffix} {output.dedup_RPbams} cpBams.sh;
+		Rscript --vanilla {params.Rscript} {params.R_LIBS} {params.metadata} {input.dedup_CDS} {input.dedup_UTR5} {input.dedup_UTR3} \
+		{output.dedup_RPbams} {params.gtf} {input.dedup_length} {output.dedup_html} {output.dedup_RPplots} {params.Rmd} $workDir
+		{params.shell_script} {params.metadata} {params.ND_bams} {params.ND_suffix} {output.ND_RPbams} cpBams.sh;		
+		Rscript --vanilla {params.Rscript} {params.R_LIBS} {params.metadata} {input.nodedup_CDS} {input.nodedup_UTR5} {input.nodedup_UTR3} \
+		{output.ND_RPbams} {params.gtf} {input.nodedup_length} {output.nodedup_html} {output.ND_RPplots}  {params.Rmd} $workDir""" 
+
+
+

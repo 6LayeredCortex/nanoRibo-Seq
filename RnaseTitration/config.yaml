@@ -1,0 +1,45 @@
+samples:
+  - JF27_S1
+  - JF28_S2
+  - JF29_S3
+  - JF30_S4
+  - JF31_S5
+
+star2rRNA: 
+  flags: "--runMode alignReads --runThreadN 8 --outSAMtype BAM Unsorted --readFilesCommand gunzip -c --outReadsUnmapped Fastx"
+  flags2: "--outSAMmultNmax 1 --outFilterScoreMinOverLread 0 --outFilterMatchNminOverLread 0 --outFilterMatchNmin 21"
+  modules: "STAR/2.6.0c-fasrc01"
+  reference: "/n/macklis_lab/users/jfroberg/mtrDmm10/STARv2.6.0c-fasrc01_rRNA_idx"
+
+star2mm10:
+   flags: "--runMode alignReads --runThreadN 8 --outSAMtype BAM SortedByCoordinate --readFilesCommand gunzip -c --outSAMmultNmax 1"
+   flags2: "--outFilterScoreMinOverLread 0 --outFilterMatchNminOverLread 0 --outFilterMatchNmin 21"
+   STARmod: "STAR/2.6.0c-fasrc01"
+   samMod: "samtools/1.5-fasrc02"
+   reference: "/n/macklis_lab/users/jfroberg/mtrDmm10/GRCm38_M22_star_idx"
+   
+featureCounts:
+   modules: "subread/1.5.1-fasrc01"
+   gtf: "/n/macklis_lab/users/jfroberg/gtfs/Mus_musculus.GRCm38.95_chrNamed_headFix.gtf"
+
+star2transcriptome:
+   flags: "--runMode alignReads --runThreadN 8 --outSAMtype BAM SortedByCoordinate --readFilesCommand gunzip -c --outSAMmultNmax 1"
+   flags2: "--quantMode TranscriptomeSAM --outFilterScoreMinOverLread 0 --outFilterMatchNminOverLread 0 --outFilterMatchNmin 21"
+   STARmod: "STAR/2.6.0c-fasrc01"
+   samMod: "samtools/1.5-fasrc02"
+   gtf: "/n/macklis_lab/users/jfroberg/gtfs/Mus_musculus.GRCm38.95_chrNamed_headFix.gtf"
+   reference: "/n/macklis_lab/users/jfroberg/mtrDmm10/GRCm38_M22_star_idx"
+   
+lengthDistros:
+    modules: "subread/1.5.1-fasrc01 samtools/1.5-fasrc02"
+    gtf: "/n/macklis_lab/users/jfroberg/gtfs/Mus_musculus.GRCm38.95_chrNamed_headFix.gtf"
+    script: "/n/macklis_lab/users/jfroberg/code/RP_QC_and_cluster/makeLengthDistros_v2.sh"
+   
+Rmd:
+   metadata: "experimentTypesFull.csv"
+   modules: "Pandoc/2.5 R/3.5.1-fasrc01"
+   Rscript: "/n/macklis_lab/users/jfroberg/code/RP_QC_and_cluster/compile_v2.r"
+   Rmd: "/n/macklis_lab/users/jfroberg/code/RP_QC_and_cluster/LengthsCountsCov_RiboWaltz_v3.Rmd"
+   shell_script: "/n/macklis_lab/users/jfroberg/code/RP_QC_and_cluster/separateRPbams.sh"
+   R_LIBS: "/n/home12/jfroberg/R_LIBS/R_LIBS_v3.5.1"
+   gtf: "/n/macklis_lab/users/jfroberg/gtfs/Mus_musculus.GRCm38.95_chrNamed_headFix.gtf"
