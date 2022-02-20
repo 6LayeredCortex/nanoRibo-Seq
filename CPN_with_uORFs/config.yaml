@@ -1,0 +1,60 @@
+samples:
+  - JF124_S1
+  - JF125_S2
+  - JF126_S3 
+  - JF127_S4
+  - JF128_S5
+  - JF129_S6
+  - JF130_S7
+  - JF131_S8
+  - JF132_S9
+  - JF133_S10
+  - JF39_S4
+  - JF43_S8
+  - JF45_S10    
+
+star2rRNA: 
+  flags: "--runMode alignReads --runThreadN 8 --outSAMtype BAM Unsorted --readFilesCommand gunzip -c --outReadsUnmapped Fastx"
+  flags2: "--outSAMmultNmax 1 --outFilterScoreMinOverLread 0 --outFilterMatchNminOverLread 0 --outFilterMatchNmin 21"
+  modules: "STAR/2.6.0c-fasrc01"
+  reference: "/n/macklis_lab/users/jfroberg/mtrDmm10/STARv2.6.0c-fasrc01_rRNA_idx"
+
+star2mm10:
+   flags: "--runMode alignReads --runThreadN 8 --outSAMtype BAM SortedByCoordinate --readFilesCommand gunzip -c --outSAMmultNmax 1"
+   flags2: "--outFilterScoreMinOverLread 0 --outFilterMatchNminOverLread 0 --outFilterMatchNmin 21"
+   STARmod: "STAR/2.6.0c-fasrc01"
+   samMod: "samtools/1.5-fasrc02"
+   reference: "/n/macklis_lab/users/jfroberg/mtrDmm10/GRCm38_M22_star_idx"
+   
+featureCounts:
+   modules: "subread/1.5.1-fasrc01"
+   gtf: "/n/macklis_lab/users/jfroberg/gtfs/Mus_musculus.GRCm38.95_chrNamed_headFix.gtf"
+
+star2transcriptome:
+   flags: "--runMode alignReads --runThreadN 8 --outSAMtype BAM SortedByCoordinate --readFilesCommand gunzip -c --outSAMmultNmax 1"
+   flags2: "--quantMode TranscriptomeSAM --outFilterScoreMinOverLread 0 --outFilterMatchNminOverLread 0 --outFilterMatchNmin 21"
+   STARmod: "STAR/2.6.0c-fasrc01"
+   samMod: "samtools/1.5-fasrc02"
+   gtf: "/n/macklis_lab/users/jfroberg/gtfs/Mus_musculus.GRCm38.95_chrNamed_headFix.gtf"
+   reference: "/n/macklis_lab/users/jfroberg/mtrDmm10/GRCm38_M22_star_idx"
+   
+lengthDistros:
+    modules: "subread/1.5.1-fasrc01 samtools/1.5-fasrc02"
+    gtf: "/n/macklis_lab/users/jfroberg/gtfs/Mus_musculus.GRCm38.95_chrNamed_headFix.gtf"
+    script: "/n/macklis_lab/users/jfroberg/code/RP_QC_and_cluster/makeLengthDistros_v2.sh"
+
+RiboCode:
+    metadata: "experimentTypesFull.csv"
+    modules: "Anaconda/5.0.1-fasrc02"
+    shell_script: "/n/macklis_lab/users/jfroberg/code/RP_QC_and_cluster/separateRPbams.sh"
+    annot_gtf: "/n/macklis_lab/users/jfroberg/gtfs/mm10_RiboCode_gtfs/RiboCode_annot.gtf"
+    list_script: "/n/macklis_lab/users/jfroberg/code/RP_QC_and_cluster/bamFileList_script.sh"   
+    comboScript: "/n/macklis_lab/users/jfroberg/code/RP_QC_and_cluster/combineORFcounts.sh"
+
+Rmd:
+   metadata: "experimentTypesFull.csv"
+   modules: "Pandoc/2.5 R/3.5.1-fasrc01"
+   Rscript: "/n/macklis_lab/users/jfroberg/code/RP_QC_and_cluster/compile_v3.R"
+   Rmd: "/n/holyscratch01/macklis_lab/jfroberg/RPTest5/LengthsCountsCov_RiboWaltz_v6_nointeract.Rmd"
+   R_LIBS: "/n/home12/jfroberg/R_LIBS/R_LIBS_v3.5.1"
+   gtf: "/n/macklis_lab/users/jfroberg/gtfs/Mus_musculus.GRCm38.95_chrNamed_headFix.gtf"  
