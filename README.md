@@ -16,7 +16,7 @@ and can likely be adapted to similar SLURM-based high performance environments.
 
 Descriptions of the two workflows:
 
-1) RNaseTitration: 
+**1) RNaseTitration: **
 Used with the four RNase Titration samples to generate Figure 3. Can be used to generate similar "QC" figures for any nanoRibo-seq data sets
 
 Begins with a directory ("merged") containing the fastq.gz files for each sample (R1 and R2).
@@ -47,5 +47,16 @@ rule featureCounts_noDedup: featureCounts without read deduplication first. Actu
 rule Rmd: Takes in the featureCounts, lengthDistro outputs and runs them through an R-markdown (LengthsCountsCov_RiboWaltz_v3.Rmd) to produce the QC figures, such as Figure 3.This rule actually first runs a shell script ("compile_v2.r") that configures the R- environment for the R-markdown script to run. 
 The R-markdown script also runs RiboWaltz (https://github.com/LabTranslationalArchitectomics/riboWaltz), which performs the detailed P-site analysis. 
 
-2) CPN_w_uORFs:
+**2) CPN_w_uORFs:**
+**Used with all CPN samples to generate Figure 7. 
+Same as alignment and QC workflow as the Rnase Titration, but also includes code to run RiboCode to identify all translated ORFs,
+and an R-markdown file that analyzes the output of the RiboCode ORF analysis**
+
+rule RiboCode: Takes in reads aligned to genome, runs python package RiboCode (https://github.com/xryanglab/RiboCode) to identify translated ORFs.
+rule Rmd: Takes in the featureCounts, lengthDistro outputs and runs them through an R-markdown (LengthsCountsCov_RiboWaltz_v6_nointeract.Rmd) 
+to produce the QC figures, such as Figure 3.This rule actually first runs a shell script ("compile_v2.r") that configures the R- environment for the R-markdown script to run. 
+The R-markdown script also runs RiboWaltz (https://github.com/LabTranslationalArchitectomics/riboWaltz), which performs the detailed P-site analysis.
+Parses the output of RiboCode to plot ORF length distributions, start codon frequencies, T.E. distributions. 
+
+
 
