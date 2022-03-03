@@ -53,6 +53,7 @@ Same as alignment and QC workflow as the Rnase Titration, but also includes code
 and an R-markdown file that analyzes the output of the RiboCode ORF analysis**
 
 rule RiboCode: Takes in reads aligned to genome, runs python package RiboCode (https://github.com/xryanglab/RiboCode) to identify translated ORFs.
+
 rule Rmd: Takes in the featureCounts, lengthDistro outputs and runs them through an R-markdown (LengthsCountsCov_RiboWaltz_v6_nointeract.Rmd) 
 to produce the QC figures, such as Figure 3.This rule actually first runs a shell script ("compile_v2.r") that configures the R- environment for the R-markdown script to run. 
 The R-markdown script also runs RiboWaltz (https://github.com/LabTranslationalArchitectomics/riboWaltz), which performs the detailed P-site analysis.
