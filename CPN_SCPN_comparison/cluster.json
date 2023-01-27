@@ -1,0 +1,125 @@
+{
+   "__default__" :
+   {
+      "account" : "jfroberg",
+      "time" : "1-1:00:00",
+      "partition" : "shared",
+      "cores" : 1,
+      "error" : "logs/%j.err",
+      "output" : "logs/%j.out",
+      "mem" : '5G'
+   },
+   "rRNA_align" :
+   {
+      "account" : "jfroberg",
+      "time" : "0-4:00:00",
+      "partition" : "shared",
+      "cores" : 8,
+      "error" : "logs/%j.err",
+      "output" : "logs/%j.out",
+      "mem" : '64G'
+   },
+   "mm10_align" :
+   {
+      "account" : "jfroberg",
+      "time" : "0-1:00:00",
+      "partition" : "shared",
+      "cores" : 8,
+      "error" : "logs/%j.err",
+      "output" : "logs/%j.out",
+      "mem" : '64G'
+   },
+   "transcriptome_align" :
+   {
+      "account" : "jfroberg",
+      "time" : "0-4:00:00",
+      "partition" : "shared",
+      "cores" : 8,
+      "error" : "logs/%j.err",
+      "output" : "logs/%j.out",
+      "mem" : '64G'
+   },
+   "featureCounts" :
+   {
+      "account" : "jfroberg",
+      "time" : "0-10:00:00",
+      "partition" : "shared",
+      "cores" : 1,
+      "error" : "logs/%j.err",
+      "output" : "logs/%j.out",
+      "mem" : '60G'
+   },
+    "featureCounts_noDedup" :
+   {
+      "account" : "jfroberg",
+      "time" : "0-10:00:00",
+      "partition" : "shared",
+      "cores" : 1,
+      "error" : "logs/%j.err",
+      "output" : "logs/%j.out",
+      "mem" : '60G'
+   },
+   "umi_extract" :
+   {
+      "account" : "jfroberg",
+      "time" : "1-1:00:00",
+      "partition" : "shared",
+      "cores" : 1,
+      "error" : "logs/%j.err",
+      "output" : "logs/%j.out",
+      "mem" : '20G'
+   },
+   "dedup" :
+   {
+      "account" : "jfroberg",
+      "time" : "0-16:00:00",
+      "partition" : "shared",
+      "cores" : 1,
+      "error" : "logs/%j.err",
+      "output" : "logs/%j.out",
+      "mem" : '30G'
+   },
+   "dedup_transcriptome" :
+   {
+      "account" : "jfroberg",
+      "time" : "0-16:00:00",
+      "partition" : "shared",
+      "cores" : 1,
+      "error" : "logs/%j.err",
+      "output" : "logs/%j.out",
+      "mem" : '30G'
+   },
+   "Rmd" :
+   {
+      "account" : "jfroberg",
+      "time" : "0-2:00:00",
+      "partition" : "shared",
+      "cores" : 1,
+      "error" : "logs/%j.err",
+      "output" : "logs/%j.out",
+      "mem" : '40G'
+   },
+   "lengthDistros" :
+   {
+      "account" : "jfroberg",
+      "time" : "0-10:00:00",
+      "partition" : "shared",
+      "cores" : 1,
+      "error" : "logs/%j.err",
+      "output" : "logs/%j.out",
+      "mem" : '100G'
+   },
+   "RiboCode" :
+   {
+      "account" : "jfroberg",
+      "time" : "0-10:00:00",
+      "partition" : "shared",
+      "cores" : 1,
+      "error" : "logs/%j.err",
+      "output" : "logs/%j.out",
+      "mem" : '100G'
+   }
+   
+}
+
+

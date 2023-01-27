@@ -1,0 +1,601 @@
+---
+title: "CountsPlotting"
+author: "John E Froberg"
+date: "Sys.Date()"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup}
+knitr::opts_chunk$set(echo=FALSE, message=FALSE)
+
+library('devtools')
+library('tidyverse')
+library('riboWaltz')
+library("rmarkdown")
+library("patchwork")
+library("pheatmap")
+library("RColorBrewer")
+library("ggplotify")
+library("topGO")
+library("ggstance")
+library("DESeq2")
+library("biomaRt")
+library("UpSetR")
+library("GGally")
+library("clusterProfiler")
+library("org.Mm.eg.db")
+library("enrichplot")
+
+# #variables that are normally passed in from the Snakemake run:
+experimentTypeFile="experimentTypesFull_SubFall2021.csv"
+lengthCountsFile="dedup_lengthDistroTidy.txt"
+CDS="dedupBams/featureCounts_CDS_summary.txt"
+three_utr="dedupBams/featureCounts_three_prime_utr_summary.txt"
+five_utr="dedupBams/featureCounts_five_prime_utr_summary.txt"
+gtf="Mus_musculus.GRCm38.95_chrNamed_headFix.gtf"
+bamFiles="dedup_RPbams"
+outDir="interactivePlots"
+dir.create(outDir)
+RiboCodeFile="RiboCode_ORFs_out.txt"
+
+
+JF_theme <- theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black"), plot.title = element_text(size = 7, face = "bold"),legend.title=element_text(size=7), legend.text=element_text(size=7), axis.text = element_text(size=7), axis.title.x = element_text(size=7),axis.title.y=element_text(size=7))
+```
+
+
+###Load in the metadata from the experiment types file. 
+###Compute "descriptive names" by dropping the "samps" and "date" fields and pasting together.
+###Save descriptiveNames as Upper Case "Samples" in experimentTypes.
+```{r loadMetadata, echo=FALSE}
+experimentTypes=read.csv(experimentTypeFile)
+ descriptiveNames <- experimentTypes %>%
+  unite(col="descriptiveNames", -samps, -date,-exp, sep=".")
+ descriptiveNames <- dplyr::select(descriptiveNames, samps, descriptiveNames)
+ experimentTypes$Samples <- descriptiveNames$descriptiveNames
+ experimentTypes
+```
+
+###Convert length counts to relative frequencies, add in the metadata
+```{r countsToFreqwMeta}
+lengthCounts <- read.csv(lengthCountsFile)
+totalCounts <- lengthCounts %>%
+  group_by(samps,anno) %>%
+  summarize(sum=sum(count))
+
+lengthDistro <- merge(lengthCounts, totalCounts, by=c("samps", "anno"))
+lengthDistro <- lengthDistro %>%
+  mutate(freq=count/sum)
+
+#metadata <- read.csv("metadata.csv")
+lengthDistro <- merge(lengthDistro, experimentTypes, by="samps")
+
+```
+###Find the length with max freq for all samples
+```{r maxFreq}
+maxFreq <- lengthDistro %>%
+  group_by(samps, anno) %>%
+  summarize(max=max(freq))
+
+max <- merge(maxFreq, lengthDistro, by=c("samps","anno"))
+maxLengthDistro <- filter(max, freq==max)
+maxLengthCDS_RPs <- filter(maxLengthDistro, exp=="RP" & anno=="CDS")
+```
+
+
+###Plot Freq vs length for the CDS with various groupings of the samples
+```{r freqPlotting}
+CDS_riboProf <- ggplot(filter(lengthDistro, exp=="RP",anno=="CDS"), aes(x=length, y=freq, color=Samples))+geom_line(size=1)+JF_theme+xlim(20,40)+xlab("length (nt)")+theme(axis.title.x = element_text(vjust=0))
+
+CDS_riboProf_byDate <- ggplot(filter(lengthDistro, exp=="RP",anno=="CDS"), aes(x=length, y=freq, color=Samples))+geom_line(size=1)+facet_wrap(~date)+xlim(20,40)+JF_theme
+
+CDS_riboProf_byDate_noxlim <- ggplot(filter(lengthDistro, exp=="RP",anno=="CDS"), aes(x=length, y=freq, color=descriptiveNames))+geom_line(size=1)+facet_wrap(~date)+ylim(0,0.5)+JF_theme
+
+if ( "AF" %in% levels(lengthDistro$exp) ) {
+CDS_AF_byDate <-ggplot(filter(lengthDistro, exp=="AF",anno=="CDS"), aes(x=length, y=freq, color=Samples))+geom_line(size=1)+facet_wrap(~date)+ylim(0,0.5)+JF_theme
+CDS_AF_byDate
+}
+
+
+allAnno_RiboProf_bySample <- ggplot(filter(lengthDistro, exp=="RP", anno %in% c("CDS","three_prime_utr","snoRNA")), aes(x=length, y=freq, color=anno))+geom_line(size=1)+facet_wrap(~Samples, nrow=ceiling(nlevels(factor(lengthDistro$Samples))/6))+xlim(20,40)+JF_theme+xlab("length (nt)")
+
+CDS_riboProf
+CDS_riboProf_byDate
+allAnno_RiboProf_bySample
+```
+
+
+
+###Load in the featureCounts. Use only CDS reads for RiboProf, 3'+5'UTR+CDS reads for AlkFrag libraries
+```{r loadFeatureCounts, echo=FALSE}
+loadFC <- function(experimentType, CDS, five_utr, three_utr) {
+sampNames=experimentType$samps
+CDS <- read.table(file=CDS, header= T, sep="\t", stringsAsFactors = F)
+Five_prime <- read.table(file=five_utr, header= T, sep="\t", stringsAsFactors = F)
+Three_prime <- read.table(file=three_utr, header= T, sep="\t", stringsAsFactors = F)
+filteredCDS <- CDS %>% 
+  filter(Geneid %in% Five_prime$Geneid & Geneid %in% Three_prime$Geneid)
+filtered5p <- Five_prime %>%
+  filter(Geneid %in% Five_prime$Geneid & Geneid %in% Three_prime$Geneid)
+filtered3p <- Three_prime %>%
+  filter(Geneid %in% Five_prime$Geneid & Geneid %in% Three_prime$Geneid)
+
+#move to new Rmd
+maxSampCol <- 6+length(sampNames)
+mRNA_counts <- filteredCDS[,7:maxSampCol]+filtered5p[,7:maxSampCol]+filtered3p[,7:maxSampCol]
+CDS_counts <- filteredCDS[,7:maxSampCol]
+#
+
+colnames(mRNA_counts) <- sampNames
+colnames(CDS_counts) <- sampNames
+mRNA_counts <- mRNA_counts %>%
+  mutate(Geneid=filteredCDS$Geneid, Length=filteredCDS$Length)
+CDS_counts <- CDS_counts %>%
+  mutate(Geneid=filteredCDS$Geneid, Length=filteredCDS$Length)
+mRNA_counts_tidy <- gather(mRNA_counts,"samps","counts", -Geneid, -Length)
+CDS_counts_tidy <- gather(CDS_counts,"samps","counts", -Geneid, -Length)
+mRNA_counts_tidy <- merge(mRNA_counts_tidy, experimentType, by="samps")
+CDS_counts_tidy <- merge(CDS_counts_tidy, experimentType, by="samps")
+
+raw_counts_tidy <- rbind(filter(mRNA_counts_tidy, exp=="AF"),filter(CDS_counts_tidy, exp=="RP"))
+}
+
+
+featureCounts_tidy <- loadFC(experimentTypes, CDS, five_utr, three_utr)
+total_mRNA_counts <- featureCounts_tidy %>%
+  group_by(Samples) %>%
+  summarize(mRNA_counts=sum(counts))
+total_mRNA_counts
+total_mRNA_counts_plot <- ggplot(total_mRNA_counts, aes(x=Samples, y=mRNA_counts, fill=Samples))+geom_bar(stat="identity", position="dodge")+JF_theme+theme(axis.text.x = element_text(angle = 45, hjust=1))+xlab("")+geom_hline(yintercept = 150000)
+total_mRNA_counts_plot
+
+experimentTypesPlus_mRNACounts <- merge(total_mRNA_counts, experimentTypes, by="Samples")
+
+
+total_mRNA_counts_facet <- ggplot(experimentTypesPlus_mRNACounts, aes(x=Samples, y=mRNA_counts, fill=Samples))+geom_bar(stat="identity", position="dodge")+JF_theme+theme(axis.text.x = element_text(angle = 45, hjust=1))+xlab("")+geom_hline(yintercept = 150000)+facet_wrap(~exp, nrow=2, scales="free_x")
+total_mRNA_counts_facet
+```
+
+###Calculate the and plot reads per kilobase per million mapped (to mRNA) for the ribosome profiling experiments
+```{r regionCovCalc}
+#moveTo new Rmd
+loadFCw_regions <- function(experimentType, CDS, five_utr, three_utr) {
+sampNames=experimentType$samps
+#write.csv(file="test.txt", sampNames)
+CDS <- read.table(file=CDS, header= T, sep="\t", stringsAsFactors = F)
+Five_prime <- read.table(file=five_utr, header= T, sep="\t", stringsAsFactors = F)
+Three_prime <- read.table(file=three_utr, header= T, sep="\t", stringsAsFactors = F)
+filteredCDS <- CDS %>% 
+  filter(Geneid %in% Five_prime$Geneid & Geneid %in% Three_prime$Geneid)
+filtered5p <- Five_prime %>%
+  filter(Geneid %in% Five_prime$Geneid & Geneid %in% Three_prime$Geneid)
+filtered3p <- Three_prime %>%
+  filter(Geneid %in% Five_prime$Geneid & Geneid %in% Three_prime$Geneid)
+
+maxSampCol <- 6+length(sampNames)
+mRNA_counts <- filteredCDS[,7:maxSampCol]+filtered5p[,7:maxSampCol]+filtered3p[,7:maxSampCol]
+CDS_counts <- filteredCDS[,7:maxSampCol]
+FiveP_counts <- filtered5p[,7:maxSampCol]
+ThreeP_counts <- filtered3p[,7:maxSampCol]
+colnames(CDS_counts) <- sampNames
+colnames(FiveP_counts) <- sampNames
+colnames(ThreeP_counts) <- sampNames
+CDS_counts <- CDS_counts %>% mutate(Geneid=filteredCDS$Geneid, Length=filteredCDS$Length, region="CDS")
+FiveP_counts <-FiveP_counts %>% mutate(Geneid=filteredCDS$Geneid, Length=filtered5p$Length, region="5' UTR")
+ThreeP_counts <-ThreeP_counts %>% mutate(Geneid=filteredCDS$Geneid, Length=filtered3p$Length, region="3' UTR")
+
+All_counts <- rbind(CDS_counts, FiveP_counts, ThreeP_counts)
+All_counts_tidy <- gather(All_counts, "samps","counts", -Geneid, -Length, -region)
+All_counts_tidy <- merge(All_counts_tidy, experimentType, by="samps")
+
+rpk <- All_counts_tidy %>%
+  group_by(samps, region, exp) %>%
+  summarize(totCounts=sum(counts),totLength=sum(Length)) %>%
+  mutate(rpk=totCounts/(totLength/1000))
+
+million_mapped <- All_counts_tidy %>%
+  group_by(samps) %>%
+  summarize(mRNA_mapped_mil=sum(counts)/1e6)
+
+rpkm <- merge(rpk, million_mapped, by="samps") %>%
+  mutate(rpkm=rpk/mRNA_mapped_mil)
+#
+}
+
+rpkm_byRegion <- loadFCw_regions(experimentTypes, CDS, five_utr, three_utr)
+rpkm_byRegion$region <- factor(rpkm_byRegion$region, levels=c("5' UTR","CDS","3' UTR"))
+rpkm_byRegion <- merge(rpkm_byRegion, descriptiveNames, by="samps")
+write.csv(file="test134-185.txt", head(rpkm_byRegion) , quote=F, row.names=F)
+rpkm_byRegion <- rpkm_byRegion %>%
+  mutate(Samples=descriptiveNames)
+rpkm_byRegion_plot <- ggplot(filter(rpkm_byRegion, exp=="RP"), aes(y=rpkm,x=Samples, fill=region))+facet_wrap(~exp)+geom_bar(stat="identity", position="dodge")+JF_theme+theme(axis.text.x = element_text(angle = 45, hjust=1))+xlab("")
+rpkm_byRegion_plot
+#
+```
+
+
+###Calculate TPMs from the raw counts
+```{r calculateTPM, echo=FALSE}
+
+calcTPM <- function(RC_tidy) {
+  RC <- RC_tidy %>% 
+    dplyr::select(samps, Geneid, Length, counts) %>% #not robust to different types of metadata
+    spread("samps","counts")
+  Geneid=RC$Geneid
+  lengths=RC$Length
+  rawCounts = RC[,3:ncol(RC)] #rawCounts start with 7th column
+  
+  x <- rawCounts/lengths
+  tpm.mat <- t( t(x) * 1e6 / colSums(x) )
+  TPM_out <- data.frame(Geneid, tpm.mat)
+  colnames(TPM_out) <- c("Geneid",colnames(rawCounts))
+  TPM_out
+}
+TPMs <- calcTPM(featureCounts_tidy)
+```
+
+###Now plot the log10TPM+1 distributions
+```{r plotTPM_distros, echo=FALSE}
+
+tpmDensity <- function(TPMs,TPM_title="TPM_density") {
+  #takes in a tidy table of tpms and returns a density plot
+ JF_theme <- theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black"), plot.title = element_text(size = 7, face = "bold"),legend.title=element_text(size=7), legend.text=element_text(size=7), axis.text = element_text(size=7), axis.title.x = element_text(size=7),axis.title.y=element_text(size=7))
+  tpmPlot <- ggplot(TPMs,aes(log10TPM,fill=Samples ))+geom_histogram(alpha=0.3,position="identity",bins=100)+JF_theme+theme(legend.position = c(0.75,0.75))+ggtitle(TPM_title)
+}
+
+
+TPMs_tidy <- gather(TPMs, "samps","TPM",-Geneid)
+TPMs_tidy <- TPMs_tidy %>%
+  mutate(log10TPM=log10(TPM+1))
+TPMs_tidy <- merge(TPMs_tidy, descriptiveNames, by="samps")
+TPMs_tidy <- TPMs_tidy %>%
+  mutate(Samples=descriptiveNames)
+
+TPMdensity <- tpmDensity(TPMs_tidy)
+TPMdensity <- TPMdensity + ylab("# of genes")
+TPMdensity
+```
+
+###Plot the number of genes above TPM threshold=10 and threshold=20
+```{r aboveTPMthreshold, echo=FALSE}
+aboveTPM <- function(TPM_tidy, threshold=10) {
+  #take in a tpm table and a tpm threshold, 
+  tpm_frame <- data.frame(TPM_tidy, tpmFilter=TPM_tidy$TPM >= threshold)
+  tpm_frame <- group_by(tpm_frame, Samples)
+  tpm_aboveFilt <- summarize(tpm_frame, tpmFilter=sum(tpmFilter))
+}
+
+aboveTPM10 <- aboveTPM(TPMs_tidy, threshold=10)
+aboveTPM20 <- aboveTPM(TPMs_tidy, threshold=20)
+
+
+aboveTPM10_plot <- ggplot(aboveTPM10, aes(x=Samples, y=tpmFilter, fill=Samples))+geom_col()+ggtitle("TPM above 10")+JF_theme+xlab("")+theme(legend.position = "none")+theme(axis.text.x = element_text(angle = 45, hjust=1))+ylab("# genes above threshold")
+aboveTPM20_plot <- ggplot(aboveTPM20, aes(x=Samples, y=tpmFilter, fill=Samples))+geom_col()+ggtitle("TPM above 20")+JF_theme+theme(legend.position = "none")+theme(axis.text.x = element_text(angle = 45, hjust=1))+ylab("# genes above threshold")+xlab("")
+
+aboveTPM10_plot
+aboveTPM20_plot
+```
+
+###Plot the distribtion of rawCounts in each sample:
+```{r plotRawDistros, echo=FALSE}
+rawDensity <- ggplot(featureCounts_tidy,aes(log10(counts+1),fill=Samples ))+geom_histogram(alpha=0.3,position="identity",bins=100)+JF_theme+theme(legend.position = c(0.75,0.75))+ggtitle("rawCounts_density")
+rawDensity
+```
+
+
+###Plot the number of genes in each sample above rawCounts=10, 20, 40
+```{r aboveRawThreshold, echo=FALSE}
+aboveRaw <- function(FC_tidy, threshold=10) {
+  #take in a featureCounts table and a raw threshold, 
+  raw_frame <- data.frame(FC_tidy, rawFilter=FC_tidy$counts >= threshold)
+  raw_frame <- group_by(raw_frame, Samples)
+  raw_aboveFilt <- summarize(raw_frame, rawFilter=sum(rawFilter))
+}
+
+aboveRaw10 <- aboveRaw(featureCounts_tidy, threshold=10)
+aboveRaw20 <- aboveRaw(featureCounts_tidy, threshold=20)
+aboveRaw40 <- aboveRaw(featureCounts_tidy, threshold=40)
+
+aboveRaw10_plot <- ggplot(aboveRaw10, aes(x=Samples, y=rawFilter, fill=Samples))+geom_col()+ggtitle("Raw above 10")+JF_theme+theme(legend.position = "none")+theme(axis.text.x = element_text(angle = 45, hjust=1))+ylab("# genes above threshold")+xlab("")
+aboveRaw20_plot <- ggplot(aboveRaw20, aes(x=Samples, y=rawFilter, fill=Samples))+geom_col()+ggtitle("Raw above 20")+JF_theme+theme(legend.position = "none")+theme(axis.text.x = element_text(angle = 45, hjust=1))+ylab("# genes above threshold")+xlab("")
+aboveRaw40_plot <- ggplot(aboveRaw40, aes(x=Samples, y=rawFilter, fill=Samples))+geom_col()+ggtitle("Raw above 40")+JF_theme+theme(legend.position = "none")+theme(axis.text.x = element_text(angle = 45, hjust=1))+ylab("# genes above threshold")+xlab("")
+
+aboveRaw10_plot
+aboveRaw20_plot
+aboveRaw40_plot
+```
+
+###Code to filter a TPM-table either for genes where 1) all samples above a TPM-based filter (filterTPMs)
+###Or 2) genes above a rawCount threshold (defult=10) in a given fraction of samples (default=1/4).
+```{r filter_functions}
+filterTPMs <- function(TPMs, threshold=10) {
+  TPMs_filt <- filter_if(TPMs, is.double, all_vars(. > threshold))
+}
+
+filterRaw <- function(FC_tidy, threshold=10, frac_samples=1/4, experimentTypes, TPMs) {
+  raw_frame <- data.frame(FC_tidy, rawFilter=FC_tidy$counts >= threshold)
+  #First, filter for all samples where a gene passed the raw filter. Then, count the number of instances
+  #Finally, filter for Genes where the number of samples exceeds the cutoff (where gene is above threshold in n/2-1 samples). Then filter the rows of the TPM matrix for gene IDs matching the genes passing the filter.
+  
+  filt_frame <- filter(raw_frame, rawFilter==TRUE)
+  filt_frame <- filt_frame %>%
+    group_by(Geneid) %>%
+    add_count(Geneid)
+  
+  # raw_frame <- group_by(raw_frame, Geneid) %>%
+  #   add_count(rawFilter)
+  sampNames=experimentTypes$samps
+  numSamps <- length(sampNames)
+  sampCutoff <- frac_samples * numSamps
+  GenesOverFilt <- filter(filt_frame, n >= sampCutoff)
+  TPMs_filt <- filter(TPMs, Geneid %in% GenesOverFilt$Geneid)
+}
+
+```
+
+###Calculate and plot Pearson's R correlation coefficient for all genes above a certain raw threshold (here, 10).
+###In a certain fraction of samples (here, 1/4 of samples)
+###Leave mRNA counts and date in the report, remove for the figure version for clarity.
+```{r TPMCorrelationHeatmap}
+TPMs_filtered <- filterRaw(FC_tidy=featureCounts_tidy,threshold=10, frac_samples=1/4, experimentTypes = experimentTypes, TPMs=TPMs)
+numGenesAboveThreshold <- dim(TPMs_filtered)[1]
+numGenesAboveThreshold
+
+cormat <- cor(dplyr::select((TPMs_filtered), -Geneid))
+experimentTypesPlus_mRNACounts <- merge(experimentTypes, total_mRNA_counts, by="Samples")
+anno <- dplyr::select(experimentTypesPlus_mRNACounts, -samps)
+rownames(anno) <- experimentTypesPlus_mRNACounts$samps
+TPM_cor_pheatmap <- pheatmap(cormat, display_numbers = T, color=colorRampPalette(brewer.pal(n=9, name="YlOrRd"))(100), annotation_col=dplyr::select(anno, -Samples), treeheight_row = 10, treeheight_col = 10, show_colnames = F, labels_col = anno$Samples, show_rownames = F, fontsize=7)
+TPM_cor_pheatmap
+
+anno <- dplyr::select(experimentTypesPlus_mRNACounts, -samps, -date, -mRNA_counts)
+rownames(anno) <- experimentTypesPlus_mRNACounts$samps
+TPM_cor_pheatmap_simple <- pheatmap(cormat, display_numbers = T, color=colorRampPalette(brewer.pal(n=9, name="YlOrRd"))(100), annotation_col=dplyr::select(anno, -Samples), treeheight_row = 10, treeheight_col = 10, show_colnames = F, labels_col = anno$Samples, show_rownames = F, fontsize=7)
+TPM_cor_pheatmap_simple
+
+
+anno <- dplyr::select(experimentTypesPlus_mRNACounts, -samps, -date, -mRNA_counts, -genotype)
+rownames(anno) <- experimentTypesPlus_mRNACounts$samps
+TPM_cor_pheatmap_simpler <- pheatmap(cormat, display_numbers = F, color=colorRampPalette(brewer.pal(n=9, name="YlOrRd"))(100), annotation_col=dplyr::select(anno, -Samples,-cells,-rep), treeheight_row = 10, treeheight_col = 10, show_colnames = F, labels_col = anno$Samples, show_rownames = F, fontsize=7)
+TPM_cor_pheatmap_simpler
+
+
+```
+
+#Filter out samples with fewer than 150000 mRNA-aligned reads (rounded to nearest 1000)
+```{r TPM_heatmap_and_PCA_sample_filtering}
+read_threshold=149500
+featureCounts_tidy_sampFilt <- merge(featureCounts_tidy, total_mRNA_counts, by="Samples") %>%
+  filter(mRNA_counts > read_threshold )
+
+experimentTypes_sampFilt <- filter(experimentTypesPlus_mRNACounts, mRNA_counts > read_threshold)
+
+featureCounts_tidy_sampFilt_forTPMcalc <- dplyr::select(featureCounts_tidy_sampFilt, -mRNA_counts)
+TPMs_sampFilt <- calcTPM(featureCounts_tidy_sampFilt_forTPMcalc)
+
+TPMs_sampFilt <- filterRaw(FC_tidy=featureCounts_tidy_sampFilt,threshold=20, frac_samples=1/5, experimentTypes = experimentTypes_sampFilt, TPMs=TPMs_sampFilt)
+numGenesAboveThreshold <- dim(TPMs_sampFilt)[1]
+numGenesAboveThreshold
+
+cormat_sampFilt <- cor(dplyr::select((TPMs_sampFilt), -Geneid))
+
+anno <- dplyr::select(experimentTypes_sampFilt, -samps, -date, -mRNA_counts, -genotype,-rep)
+rownames(anno) <- experimentTypes_sampFilt$samps
+TPM_cor_pheatmap_sampFilt <- pheatmap(cormat_sampFilt, display_numbers = T, color=colorRampPalette(brewer.pal(n=9, name="YlOrRd"))(100), annotation_col=dplyr::select(anno, -Samples), treeheight_row = 10, treeheight_col = 10, show_colnames = F, labels_row = anno$Samples, show_rownames = F, fontsize=7)
+TPM_cor_pheatmap_sampFilt
+
+
+TPMs_sampFilt.pca <- prcomp(t(dplyr::select((TPMs_sampFilt), -Geneid)))
+TPMs_sampFilt.pca_X_tidy <- data.frame(samps=rownames(TPMs_sampFilt.pca$x), TPMs_sampFilt.pca$x)
+TPMs_sampFilt.pca_X_tidy <- merge(TPMs_sampFilt.pca_X_tidy, experimentTypes_sampFilt, by="samps" )
+
+TPMs_sampFilt.pca.var <- TPMs_sampFilt.pca$sdev^2
+TPMs_sampFilt.pca.var <- round(TPMs_sampFilt.pca.var/sum(TPMs_sampFilt.pca.var)*100,1)
+
+TPMs_sampFilt.PC1v2_plot <- ggplot(TPMs_sampFilt.pca_X_tidy, aes(x=PC1, y=PC2, color=subtype, shape=exp))+geom_point()+xlab(paste("PC1- ",TPMs_sampFilt.pca.var[1],"%", sep=""))+ylab(paste("PC2- ",TPMs_sampFilt.pca.var[2],"%", sep=""))
+TPMs_sampFilt.PC1v2_plot
+TPMs_sampFilt.PC2v3_plot <- ggplot(TPMs_sampFilt.pca_X_tidy, aes(x=PC2, y=PC3, color=subtype, shape=exp))+geom_point()+xlab(paste("PC2- ",TPMs_sampFilt.pca.var[2],"%", sep=""))+ylab(paste("PC3- ",TPMs_sampFilt.pca.var[3],"%", sep=""))
+TPMs_sampFilt.PC2v3_plot
+
+TPMs_sampFilt_tidy <- gather(TPMs_sampFilt, "samps","TPM",-Geneid)
+TPMs_sampFilt_tidy <- merge(TPMs_sampFilt_tidy, experimentTypes_sampFilt, by="samps")
+
+TPMs_sampFilt_vioPlot <- ggplot(TPMs_sampFilt_tidy, aes(x=Samples, y=log10(TPM+1), fill=subtype))+geom_violin()+facet_wrap(~exp, scales="free_x") 
+TPMs_sampFilt_vioPlot
+```
+
+###Make the counts matrix for DESeq2.
+```{r makeCountsMatrixForDESeq2}
+
+DESeq2_counts_matrix <- featureCounts_tidy_sampFilt %>%
+    dplyr::select(samps, Geneid, counts) %>%
+    spread("samps","counts") %>%
+    filter(Geneid %in% TPMs_sampFilt$Geneid)
+
+rownames(DESeq2_counts_matrix) <- DESeq2_counts_matrix$Geneid
+DESeq2_counts_matrix <- dplyr::select(DESeq2_counts_matrix, -Geneid)
+colData <- dplyr::select(experimentTypes_sampFilt, samps, exp,subtype)
+colData <- dplyr::arrange(colData, samps)
+
+rownames(colData) <- colData$samps
+colData <- dplyr::select(colData, -samps)
+
+```
+
+###Run DESeq2, including an exp:subtype interaction term. The genes with this 
+###interaction term significant are the ones differentially translated. 
+###However, this includes exclusively translated genes, and buffered genes.
+###Need to run DESeq2 separately on the AF (RNA) and RP (Ribo-Seq) data sets
+###To be able to parse out translational regulation from buffering.
+###Update 4/21/21: running one full model: ~exp+subtype+exp:subtype
+###The main effect of exp is translation efficiency (TE) in CPN
+###The main effect of exp+exp:subtype interaction is SCPN TE
+###The main effect of subtype is the RP/AF ratio in CPN
+###The main effect of subtype+exp:subtype interaction is RP/AF in SCPN
+###Awkwardly renaming the results objects to match previous names
+###Using genes that are significant in the subtype main effect as "RNA"
+###and genes significant in the exp comparison as "Ribo". Significant in both
+###is "RNA+Ribo"
+###Write out the Geneids and log2FC for pre-ranked GSEA analysis
+```{r DESeq2}
+sig=0.05
+TE_sig=0.1
+dds <- DESeqDataSetFromMatrix(countData = DESeq2_counts_matrix, colData = colData, design=~exp+subtype+subtype:exp)
+dds$exp <- factor(dds$exp, levels=c("AF","RP"))
+dds$subtype <- factor(dds$subtype, levels=c("CPN","SCPN"))
+dds <- DESeq(dds)
+res_diffTE <- results(dds, alpha=TE_sig, name="expRP.subtypeSCPN", independentFiltering =T)
+
+
+#main effect of exp, RP vs AF in CPN
+res_TE_CPN <- results(dds, contrast=c("exp", "RP","AF" ), alpha=sig)
+#exp effect for SCPN
+res_TE_SCPN <- results(dds, contrast=list(c("exp_RP_vs_AF", "expRP.subtypeSCPN" )), alpha=sig)
+#effect of subtype in AF, RP
+res_subtype_AF <- results(dds, contrast=c("subtype","SCPN","CPN"), alpha=sig)
+res_subtype_RP <- results(dds, contrast=list(c("subtype_SCPN_vs_CPN","expRP.subtypeSCPN")), alpha=sig)
+
+res_AF_df <- data.frame(res_subtype_AF, contrast="mRNA", Geneid=rownames(res_subtype_AF)) %>% mutate(mRNA_sig=case_when(padj < sig & log2FoldChange < 0 ~ "lower", padj < sig & log2FoldChange > 0 ~ "higher", padj > sig ~ "not significant"))
+res_RP_df <- data.frame(res_subtype_RP, contrast="RPF", Geneid=rownames(res_subtype_RP)) %>% mutate(RP_sig=case_when(padj < sig & log2FoldChange < 0 ~ "lower", padj < sig & log2FoldChange > 0 ~ "higher", padj > sig ~ "not significant"))
+res_diffTE_df <- data.frame(res_diffTE, contrast="subtypeTE", Geneid=rownames(res_diffTE)) %>% mutate(diffTE_sig=case_when(padj < TE_sig & log2FoldChange < 0 ~ "lower", padj < TE_sig & log2FoldChange > 0 ~ "higher", padj > TE_sig ~ "not significant"))
+res_TE_CPN_df <- data.frame(res_TE_CPN, contrast="TE_CPN", Geneid=rownames(res_TE_CPN)) %>% mutate(TE_CPN_sig=case_when(padj < sig & log2FoldChange < 0 ~ "lower", padj < sig & log2FoldChange > 0 ~ "higher", padj > sig ~ "not significant"))
+res_TE_SCPN_df <- data.frame(res_TE_SCPN, contrast="TE_SCPN", Geneid=rownames(res_TE_SCPN)) %>% mutate(TE_SCPN_sig=case_when(padj < sig & log2FoldChange < 0 ~ "lower", padj < sig & log2FoldChange > 0 ~ "higher", padj > sig ~ "not significant"))
+
+mRNA_MAplot <- ggplot(filter(res_AF_df, is.na(mRNA_sig)==F), aes(y=log2FoldChange,x=log10(baseMean), color=mRNA_sig))+JF_theme+geom_point(aes=0.5, size=0.2)+scale_color_manual(values=c("red","blue","grey"))+ylim(-6,6)+theme(legend.position = c(1 , 0.8), legend.key.size = unit(0.5,"line"))
+RPF_MAplot <- ggplot(filter(res_RP_df, is.na(RP_sig)==F) , aes(y=log2FoldChange,x=log10(baseMean), color=RP_sig))+JF_theme+geom_point(aes=0.5, size=0.2)+scale_color_manual(values=c("red","blue","grey"))+ylim(-6,6)+theme(legend.position = c(1, 0.8), legend.key.size = unit(0.5,"line"))
+TE_MAplot <- ggplot(filter(res_diffTE_df, is.na(diffTE_sig)==F) , aes(y=log2FoldChange,x=log10(baseMean), color=diffTE_sig))+JF_theme+geom_point(aes=0.5, size=0.2)+scale_color_manual(values=c("red","blue","grey"))+ylim(-6,6)+theme(legend.position = c(1, 0.8), legend.key.size = unit(0.5,"line"))
+
+subtypeComparison_res_df <- bind_rows(res_AF_df, res_RP_df, res_diffTE_df, res_TE_CPN_df, res_TE_SCPN_df) 
+
+RPvsAF_df <- subtypeComparison_res_df %>% filter(contrast %in% c("mRNA","RPF") & is.na(padj)==F) %>% dplyr::select(Geneid, log2FoldChange, contrast) %>% spread(key="contrast",value=log2FoldChange) %>% left_join(res_diffTE_df, by="Geneid") %>% dplyr::select(Geneid, mRNA, RPF, diffTE_sig)
+RPvsAF_scatterplot <- ggplot(RPvsAF_df, aes(x=mRNA,y=RPF))+JF_theme+geom_point(alpha=0.5, size=0.2)+geom_hline(yintercept=0)+geom_vline(xintercept=0)+xlab("mRNA log2FoldChange (SCPN/CPN)")+ylab("RPF log2FoldChange (SCPN/CPN)")+ggtitle(paste("Pearson's R=",round(cor(RPvsAF_df$mRNA,RPvsAF_df$RPF,method="pearson"),3)))+theme(legend.position = c(0.75, 0.75))
+RPvsAF_scatterplot 
+
+TE_CPNvsSCPN_df <- subtypeComparison_res_df %>% filter(contrast %in% c("TE_CPN","TE_SCPN") & is.na(padj)==F) %>% dplyr::select(Geneid, log2FoldChange, contrast) %>% spread(key="contrast",value=log2FoldChange) %>% left_join(res_diffTE_df, by="Geneid") %>% dplyr::select(Geneid, TE_CPN, TE_SCPN, diffTE_sig) %>% left_join(dplyr::select(res_TE_SCPN_df, Geneid, TE_SCPN_sig), by="Geneid") %>% left_join(dplyr::select(res_TE_CPN_df, Geneid, TE_CPN_sig), by="Geneid")
+
+TE_CPNvsSCPN_scatterplot <- ggplot(TE_CPNvsSCPN_df, aes(x=TE_CPN,y=TE_SCPN, color=diffTE_sig))+JF_theme+geom_point(alpha=0.5, size=0.2)+geom_hline(yintercept=0)+geom_vline(xintercept=0)+scale_color_manual(values=c("red","blue","black","grey"))+xlab("TE in CPN")+ylab("TE in SCPN")+ggtitle(paste("Pearson's R=",round(cor(TE_CPNvsSCPN_df$TE_CPN,TE_CPNvsSCPN_df$TE_SCPN,method="pearson"),3)))+theme(legend.position = c(0.85, 0.3), legend.key.size = unit(0.5,"line"))
+TE_CPNvsSCPN_scatterplot
+
+TE_CPNvsSCPN_scatterplot_TE_CPN_sig_colored <- ggplot(TE_CPNvsSCPN_df, aes(x=TE_CPN,y=TE_SCPN, color=TE_CPN_sig))+JF_theme+geom_point(alpha=0.5, size=0.2)+geom_hline(yintercept=0)+geom_vline(xintercept=0)+scale_color_manual(values=c("red","blue","black","grey"))+xlab("TE in CPN")+ylab("TE in SCPN")+ggtitle("T.E. in SCPN vs. T.E. in CPN, skewed TE in CPN highlighted ")+theme(legend.position = c(0.85, 0.3), legend.key.size = unit(0.5,"line"))
+TE_CPNvsSCPN_scatterplot_TE_CPN_sig_colored 
+
+TE_CPNvsSCPN_scatterplot_TE_SCPN_sig_colored <- ggplot(TE_CPNvsSCPN_df, aes(x=TE_CPN,y=TE_SCPN, color=TE_SCPN_sig))+JF_theme+geom_point(alpha=0.5, size=0.2)+geom_hline(yintercept=0)+geom_vline(xintercept=0)+scale_color_manual(values=c("red","blue","black","grey"))+xlab("TE in CPN")+ylab("TE in SCPN")+ggtitle("T.E. in SCPN vs. T.E. in CPN, skewed TE in CPN highlighted ")+theme(legend.position = c(0.85, 0.3), legend.key.size = unit(0.5,"line"))
+TE_CPNvsSCPN_scatterplot_TE_SCPN_sig_colored 
+
+log2FC_histo_plot <- filter(subtypeComparison_res_df, (contrast %in% c("TE_SCPN","TE_CPN")==F)) %>%
+  ggplot(aes(x=log2FoldChange, fill=contrast))+JF_theme+geom_histogram(alpha=0.5, bins=400, position="identity")+ylab("gene count")
+log2FC_histo_plot
+
+log2FC_ecdf_plot <- filter(subtypeComparison_res_df, (contrast %in% c("TE_SCPN","TE_CPN")==F)) %>%
+  ggplot(aes(x=log2FoldChange, color=contrast))+JF_theme+stat_ecdf()+ylab("cumlative_fraction")
+log2FC_ecdf_plot
+
+```
+
+```{r enrichGO}
+rna_universe <- subtypeComparison_res_df %>%
+ dplyr::select(Geneid) %>% distinct()
+rna_universe <- rna_universe$Geneid
+
+
+run_enrichGO <- function(genesOfInterest, gene_uni=rna_universe, min_count=15) {
+  GO_res <- enrichGO(gene=genesOfInterest, universe=gene_uni,  OrgDb = "org.Mm.eg.db", keyType = "ENSEMBL", ont = "ALL", pAdjustMethod = "BH", readable = T, pool = F,) %>% data.frame() %>% filter(Count > min_count) %>% separate(GeneRatio, into = c("Significant", "denom")) %>%  mutate(GeneRatio = as.numeric(Significant) / as.numeric(denom)) %>% separate(BgRatio, into=c("notSignificant","denom")) %>% mutate(BgRatio=as.numeric(notSignificant)/as.numeric(denom))
+}
+
+run_enrichGO_raw_output <- function(genesOfInterest, gene_uni=rna_universe, min_count=15) {
+  #same as run_enrichGO, but does not convert the output to a dataframe. 
+  GO_res <- enrichGO(gene=genesOfInterest, universe=gene_uni,  OrgDb = "org.Mm.eg.db", keyType = "ENSEMBL", ont = "ALL", pAdjustMethod = "BH", readable = T, pool = F,)
+}
+
+SCPNvsCPN_TE_higher <- (subtypeComparison_res_df %>% filter(diffTE_sig == "higher"))$Geneid
+SCPNvsCPN_TE_lower <- (subtypeComparison_res_df %>% filter(diffTE_sig == "lower"))$Geneid
+diffTE_genes <- union(SCPNvsCPN_TE_higher, SCPNvsCPN_TE_lower)
+CPN_TE_high <- (subtypeComparison_res_df %>% filter(TE_CPN_sig == "higher"))$Geneid
+SCPN_TE_high <- (subtypeComparison_res_df %>% filter(TE_SCPN_sig == "higher"))$Geneid
+CPN_TE_low <- (subtypeComparison_res_df %>% filter(TE_CPN_sig == "lower"))$Geneid
+SCPN_TE_low <- (subtypeComparison_res_df %>% filter(TE_SCPN_sig == "lower"))$Geneid
+SCPN_mRNA <- (subtypeComparison_res_df %>% filter(mRNA_sig == "higher"))$Geneid
+CPN_mRNA <- (subtypeComparison_res_df %>% filter(mRNA_sig == "lower"))$Geneid
+SCPN_RPF <- (subtypeComparison_res_df %>% filter(RP_sig == "higher"))$Geneid
+CPN_RPF <- (subtypeComparison_res_df %>% filter(RP_sig == "lower"))$Geneid
+
+CPN_SCPN_TE_upset_list <- list("CPN_high"=CPN_TE_high, "CPN_low"=CPN_TE_low, "SCPN_high"=SCPN_TE_high, "SCPN_low"=SCPN_TE_low)
+CPN_SCPN_TE_upset <- upset(fromList(CPN_SCPN_TE_upset_list), order.by="freq")
+CPN_SCPN_TE_upset 
+
+SCPN_CPN_AF_RP_upset_list <- list("SCPN_mRNA"=SCPN_mRNA, "CPN_mRNA"=CPN_mRNA, "SCPN_RPF"=SCPN_RPF, "CPN_RPF"=CPN_RPF)
+SCPN_CPN_AF_RP_upset <- upset(fromList(SCPN_CPN_AF_RP_upset_list), order.by="freq")
+SCPN_CPN_AF_RP_upset 
+
+diffTE_upset_list <- list("SCPN_TE"=SCPNvsCPN_TE_higher, "CPN_TE"=SCPNvsCPN_TE_lower, "SCPN_mRNA"=SCPN_mRNA, "CPN_mRNA"=CPN_mRNA, "SCPN_RPF"=SCPN_RPF, "CPN_RPF"=CPN_RPF )
+diffTE_upset <- upset(fromList(diffTE_upset_list), keep.order = T, nsets=length(diffTE_upset_list))
+diffTE_upset 
+diffTE_focus_list <- list(list("SCPN_TE","SCPN_mRNA"),list("SCPN_TE","SCPN_RPF"),
+                          list("SCPN_TE","CPN_mRNA"),list("SCPN_TE","CPN_RPF"),
+                          list("CPN_TE","CPN_mRNA"),list("CPN_TE","CPN_RPF"),
+                          list("CPN_TE","SCPN_mRNA"),list("CPN_TE","SCPN_RPF"),
+                          list("CPN_TE","SCPN_mRNA","CPN_RPF"), list("SCPN_TE","SCPN_RPF","SCPN_mRNA"),list("CPN_TE","CPN_RPF","CPN_mRNA"), list("SCPN_TE","CPN_mRNA","SCPN_RPF"))
+diffTE_upset_TE_focus <- upset(fromList(diffTE_upset_list), order.by = "freq",intersections=diffTE_focus_list)
+
+
+subtypeComp_GO_list <- list("SCPN_vsCPN_TEhigher"=SCPNvsCPN_TE_higher,"SCPN_vsCPN_TElower"=SCPNvsCPN_TE_lower,
+                            "CPN_TE_high"=CPN_TE_high, "SCPN_TE_high"=SCPN_TE_high,
+                            "CPN_TE_low"=CPN_TE_low, "SCPN_TE_low"=SCPN_TE_low,
+                            "diffTE"=diffTE_genes,
+                            "SCPN_mRNA"=SCPN_mRNA, "CPN_mRNA"=CPN_mRNA, 
+                            "SCPN_RPF"=SCPN_RPF, "CPN_RPF"=CPN_RPF)
+
+ego_subtypes <- lapply(subtypeComp_GO_list, run_enrichGO)
+ego_subtypes_raw <- lapply(subtypeComp_GO_list, run_enrichGO_raw_output)
+
+names(ego_subtypes ) <- names(ego_subtypes)
+
+plot_ego <- function(ego, numToPlot=5, onto=c("BP","CC","MF"), title="") {
+  ego_filt <- ego %>% filter(ONTOLOGY %in% onto) %>% group_by(ONTOLOGY) %>% slice_min(n=numToPlot, order_by=qvalue)
+  ego_filt$Description <- factor(ego_filt$Description, levels=ego_filt$Description)
+  ego_plot <- ggplot(ego_filt, aes(x=GeneRatio,y=Description, color=-log10(qvalue),size=Count))+JF_theme+geom_point()+facet_wrap(~ONTOLOGY, nrow=3, scales="free_y")+ggtitle(title)
+}
+
+ego_subtypes_plots <- lapply(ego_subtypes, plot_ego)
+ego_subtypes_plots_BP_CC <- lapply(ego_subtypes, plot_ego, onto=c("BP","CC"))
+
+ego_subtypes_barplots <- lapply(ego_subtypes_raw, barplot, showCategory=5, font.size=7, label_format=16)
+
+TE_CPN_higher_barplot <- ego_subtypes_barplots$CPN_TE_high + ggtitle("TE CPN, skew higher")+JF_theme+theme(legend.position = "top")
+TE_CPN_higher_barplot
+TE_SCPN_higher_barplot <- ego_subtypes_barplots$SCPN_TE_high + ggtitle("TE SCPN, skew higher")+JF_theme+theme(legend.position = "top")
+TE_SCPN_higher_barplot
+TE_CPN_lower_barplot <- ego_subtypes_barplots$CPN_TE_low + ggtitle("TE CPN, skew lower")+JF_theme+theme(legend.position = "top")
+TE_CPN_lower_barplot
+TE_SCPN_lower_barplot <- ego_subtypes_barplots$SCPN_TE_low + ggtitle("TE SCPN, skew lower")+JF_theme+theme(legend.position = "top")
+TE_SCPN_lower_barplot
+###Tried treeplot, ran into dependency issues.
+
+
+```
+
+```{r subtypesFigures_layout}
+
+###Need to manually put in the upset plots as these are not ggplots. 
+
+
+subtypesComp_Figure_upsetSpacers <- as.ggplot(TPM_cor_pheatmap_simpler) / (RPvsAF_scatterplot | mRNA_MAplot | RPF_MAplot ) / (TE_MAplot + TE_CPNvsSCPN_scatterplot) /(plot_spacer()+plot_spacer())+theme(text=element_text("ArialMT")) + plot_annotation(tag_levels = list(c("A","B","C","D","E","F","G","H"))) & theme(plot.tag=element_text(size=12, face="bold"))+theme(legend.key.size=unit(0.5,"line"))
+
+pdfName=paste(outDir, "SubtypeComparison_fig.pdf", sep="/")
+pdf(file=pdfName, width=6.5, height=9)
+plot(subtypesComp_Figure_upsetSpacers)
+dev.off()
+
+
+
+withinSubtypeTE <- (plot_spacer()| TE_CPNvsSCPN_scatterplot_TE_CPN_sig_colored | TE_CPNvsSCPN_scatterplot_TE_SCPN_sig_colored) /(TE_CPN_higher_barplot + TE_CPN_lower_barplot) / (TE_SCPN_higher_barplot + TE_SCPN_lower_barplot) / (plot_spacer() | plot_spacer()) /(plot_spacer() | plot_spacer())
+
+pdfName=paste(outDir, "withinSubtypeTE_fig.pdf", sep="/")
+pdf(file=pdfName, width=6.5, height=9)
+plot(withinSubtypeTE)
+dev.off()
+
+```
+
+

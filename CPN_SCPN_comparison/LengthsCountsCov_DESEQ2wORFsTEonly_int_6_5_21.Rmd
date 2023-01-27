@@ -1,0 +1,2314 @@
+---
+author: "John E Froberg"
+date: Sys.Date()
+title: "CountsPlotting"
+output: html_document
+---
+
+```{r setup}
+knitr::opts_chunk$set(echo=FALSE, message=FALSE)
+
+library('devtools')
+library('tidyverse')
+library('riboWaltz')
+library("rmarkdown")
+library("patchwork")
+library("pheatmap")
+library("RColorBrewer")
+library("ggplotify")
+library("topGO")
+library("ggstance")
+library("DESeq2")
+
+# #variables that are normally passed in from the Snakemake run:
+experimentTypeFile="experimentTypesFull.csv"
+lengthCountsFile="dedup_lengthDistroTidy.txt"
+CDS="dedupBams/featureCounts_CDS_summary.txt"
+three_utr="dedupBams/featureCounts_three_prime_utr_summary.txt"
+five_utr="dedupBams/featureCounts_five_prime_utr_summary.txt"
+gtf="Mus_musculus.GRCm38.95_chrNamed_headFix.gtf"
+bamFiles="dedup_RPbams"
+outDir="interactivePlots"
+RiboCodeFile="RiboCode_ORFs_out.txt"
+
+
+JF_theme <- theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black"), plot.title = element_text(size = 12, face = "bold"),legend.title=element_text(size=12), legend.text=element_text(size=12), axis.text = element_text(size=12), axis.title.x = element_text(size=12),axis.title.y=element_text(size=12))
+```
+
+
+###Load in the metadata from the experiment types file. 
+###Compute "descriptive names" by dropping the "samps" and "date" fields and pasting together.
+###Save descriptiveNames as Upper Case "Samples" in experimentTypes.
+```{r loadMetadata, echo=FALSE}
+experimentTypes=read.csv(experimentTypeFile)
+ descriptiveNames <- experimentTypes %>%
+  unite(col="descriptiveNames", -samps, -date,-exp, sep=".")
+ descriptiveNames <- dplyr::select(descriptiveNames, samps, descriptiveNames)
+ experimentTypes$Samples <- descriptiveNames$descriptiveNames
+ experimentTypes
+```
+
+###Convert length counts to relative frequencies, add in the metadata
+```{r countsToFreqwMeta}
+lengthCounts <- read.csv(lengthCountsFile)
+totalCounts <- lengthCounts %>%
+  group_by(samps,anno) %>%
+  summarize(sum=sum(count))
+
+lengthDistro <- merge(lengthCounts, totalCounts, by=c("samps", "anno"))
+lengthDistro <- lengthDistro %>%
+  mutate(freq=count/sum)
+
+#metadata <- read.csv("metadata.csv")
+lengthDistro <- merge(lengthDistro, experimentTypes, by="samps")
+
+```
+###Find the length with max freq for all samples
+```{r maxFreq}
+maxFreq <- lengthDistro %>%
+  group_by(samps, anno) %>%
+  summarize(max=max(freq))
+
+max <- merge(maxFreq, lengthDistro, by=c("samps","anno"))
+maxLengthDistro <- filter(max, freq==max)
+maxLengthCDS_RPs <- filter(maxLengthDistro, exp=="RP" & anno=="CDS")
+```
+
+
+###Plot Freq vs length for the CDS with various groupings of the samples
+```{r freqPlotting}
+CDS_riboProf <- ggplot(filter(lengthDistro, exp=="RP",anno=="CDS"), aes(x=length, y=freq, color=Samples))+geom_line(size=1)+JF_theme+xlim(20,40)+xlab("length (nt)")+theme(axis.title.x = element_text(vjust=0))
+
+CDS_riboProf_byDate <- ggplot(filter(lengthDistro, exp=="RP",anno=="CDS"), aes(x=length, y=freq, color=Samples))+geom_line(size=1)+facet_wrap(~date)+xlim(20,40)+JF_theme
+
+CDS_riboProf_byDate_noxlim <- ggplot(filter(lengthDistro, exp=="RP",anno=="CDS"), aes(x=length, y=freq, color=descriptiveNames))+geom_line(size=1)+facet_wrap(~date)+ylim(0,0.5)+JF_theme
+
+if ( "AF" %in% levels(lengthDistro$exp) ) {
+CDS_AF_byDate <-ggplot(filter(lengthDistro, exp=="AF",anno=="CDS"), aes(x=length, y=freq, color=Samples))+geom_line(size=1)+facet_wrap(~date)+ylim(0,0.5)+JF_theme
+CDS_AF_byDate
+}
+
+
+allAnno_RiboProf_bySample <- ggplot(filter(lengthDistro, exp=="RP", anno %in% c("CDS","three_prime_utr","snoRNA")), aes(x=length, y=freq, color=anno))+geom_line(size=1)+facet_wrap(~Samples, nrow=ceiling(nlevels(factor(lengthDistro$Samples))/6))+xlim(20,40)+JF_theme+xlab("length (nt)")
+
+CDS_riboProf
+CDS_riboProf_byDate
+allAnno_RiboProf_bySample
+```
+
+
+
+###Load in the featureCounts. Use only CDS reads for RiboProf, 3'+5'UTR+CDS reads for AlkFrag libraries
+```{r loadFeatureCounts, echo=FALSE}
+loadFC <- function(experimentType, CDS, five_utr, three_utr) {
+sampNames=experimentType$samps
+CDS <- read.table(file=CDS, header= T, sep="\t", stringsAsFactors = F)
+Five_prime <- read.table(file=five_utr, header= T, sep="\t", stringsAsFactors = F)
+Three_prime <- read.table(file=three_utr, header= T, sep="\t", stringsAsFactors = F)
+filteredCDS <- CDS %>% 
+  filter(Geneid %in% Five_prime$Geneid & Geneid %in% Three_prime$Geneid)
+filtered5p <- Five_prime %>%
+  filter(Geneid %in% Five_prime$Geneid & Geneid %in% Three_prime$Geneid)
+filtered3p <- Three_prime %>%
+  filter(Geneid %in% Five_prime$Geneid & Geneid %in% Three_prime$Geneid)
+
+#move to new Rmd
+maxSampCol <- 6+length(sampNames)
+mRNA_counts <- filteredCDS[,7:maxSampCol]+filtered5p[,7:maxSampCol]+filtered3p[,7:maxSampCol]
+CDS_counts <- filteredCDS[,7:maxSampCol]
+#
+
+colnames(mRNA_counts) <- sampNames
+colnames(CDS_counts) <- sampNames
+mRNA_counts <- mRNA_counts %>%
+  mutate(Geneid=filteredCDS$Geneid, Length=filteredCDS$Length)
+CDS_counts <- CDS_counts %>%
+  mutate(Geneid=filteredCDS$Geneid, Length=filteredCDS$Length)
+mRNA_counts_tidy <- gather(mRNA_counts,"samps","counts", -Geneid, -Length)
+CDS_counts_tidy <- gather(CDS_counts,"samps","counts", -Geneid, -Length)
+mRNA_counts_tidy <- merge(mRNA_counts_tidy, experimentType, by="samps")
+CDS_counts_tidy <- merge(CDS_counts_tidy, experimentType, by="samps")
+
+raw_counts_tidy <- rbind(filter(mRNA_counts_tidy, exp=="AF"),filter(CDS_counts_tidy, exp=="RP"))
+}
+
+
+featureCounts_tidy <- loadFC(experimentTypes, CDS, five_utr, three_utr)
+total_mRNA_counts <- featureCounts_tidy %>%
+  group_by(Samples) %>%
+  summarize(mRNA_counts=sum(counts))
+total_mRNA_counts
+total_mRNA_counts_plot <- ggplot(total_mRNA_counts, aes(x=Samples, y=mRNA_counts, fill=Samples))+geom_bar(stat="identity", position="dodge")+JF_theme+theme(axis.text.x = element_text(angle = 45, hjust=1))+xlab("")+geom_hline(yintercept = 150000)
+total_mRNA_counts_plot
+
+experimentTypesPlus_mRNACounts <- merge(total_mRNA_counts, experimentTypes, by="Samples")
+
+
+total_mRNA_counts_facet <- ggplot(experimentTypesPlus_mRNACounts, aes(x=Samples, y=mRNA_counts, fill=Samples))+geom_bar(stat="identity", position="dodge")+JF_theme+theme(axis.text.x = element_text(angle = 45, hjust=1))+xlab("")+geom_hline(yintercept = 150000)+facet_wrap(~exp, nrow=2, scales="free_x")
+total_mRNA_counts_facet
+```
+
+###Calculate the and plot reads per kilobase per million mapped (to mRNA) for the ribosome profiling experiments
+```{r regionCovCalc}
+#moveTo new Rmd
+loadFCw_regions <- function(experimentType, CDS, five_utr, three_utr) {
+sampNames=experimentType$samps
+#write.csv(file="test.txt", sampNames)
+CDS <- read.table(file=CDS, header= T, sep="\t", stringsAsFactors = F)
+Five_prime <- read.table(file=five_utr, header= T, sep="\t", stringsAsFactors = F)
+Three_prime <- read.table(file=three_utr, header= T, sep="\t", stringsAsFactors = F)
+filteredCDS <- CDS %>% 
+  filter(Geneid %in% Five_prime$Geneid & Geneid %in% Three_prime$Geneid)
+filtered5p <- Five_prime %>%
+  filter(Geneid %in% Five_prime$Geneid & Geneid %in% Three_prime$Geneid)
+filtered3p <- Three_prime %>%
+  filter(Geneid %in% Five_prime$Geneid & Geneid %in% Three_prime$Geneid)
+
+maxSampCol <- 6+length(sampNames)
+mRNA_counts <- filteredCDS[,7:maxSampCol]+filtered5p[,7:maxSampCol]+filtered3p[,7:maxSampCol]
+CDS_counts <- filteredCDS[,7:maxSampCol]
+FiveP_counts <- filtered5p[,7:maxSampCol]
+ThreeP_counts <- filtered3p[,7:maxSampCol]
+colnames(CDS_counts) <- sampNames
+colnames(FiveP_counts) <- sampNames
+colnames(ThreeP_counts) <- sampNames
+CDS_counts <- CDS_counts %>% mutate(Geneid=filteredCDS$Geneid, Length=filteredCDS$Length, region="CDS")
+FiveP_counts <-FiveP_counts %>% mutate(Geneid=filteredCDS$Geneid, Length=filtered5p$Length, region="5' UTR")
+ThreeP_counts <-ThreeP_counts %>% mutate(Geneid=filteredCDS$Geneid, Length=filtered3p$Length, region="3' UTR")
+
+All_counts <- rbind(CDS_counts, FiveP_counts, ThreeP_counts)
+All_counts_tidy <- gather(All_counts, "samps","counts", -Geneid, -Length, -region)
+All_counts_tidy <- merge(All_counts_tidy, experimentType, by="samps")
+
+rpk <- All_counts_tidy %>%
+  group_by(samps, region, exp) %>%
+  summarize(totCounts=sum(counts),totLength=sum(Length)) %>%
+  mutate(rpk=totCounts/(totLength/1000))
+
+million_mapped <- All_counts_tidy %>%
+  group_by(samps) %>%
+  summarize(mRNA_mapped_mil=sum(counts)/1e6)
+
+rpkm <- merge(rpk, million_mapped, by="samps") %>%
+  mutate(rpkm=rpk/mRNA_mapped_mil)
+#
+}
+
+rpkm_byRegion <- loadFCw_regions(experimentTypes, CDS, five_utr, three_utr)
+rpkm_byRegion$region <- factor(rpkm_byRegion$region, levels=c("5' UTR","CDS","3' UTR"))
+rpkm_byRegion <- merge(rpkm_byRegion, descriptiveNames, by="samps")
+write.csv(file="test134-185.txt", head(rpkm_byRegion) , quote=F, row.names=F)
+rpkm_byRegion <- rpkm_byRegion %>%
+  mutate(Samples=descriptiveNames)
+rpkm_byRegion_plot <- ggplot(filter(rpkm_byRegion, exp=="RP"), aes(y=rpkm,x=Samples, fill=region))+facet_wrap(~exp)+geom_bar(stat="identity", position="dodge")+JF_theme+theme(axis.text.x = element_text(angle = 45, hjust=1))+xlab("")
+rpkm_byRegion_plot
+#
+```
+
+
+###Calculate TPMs from the raw counts
+```{r calculateTPM, echo=FALSE}
+
+calcTPM <- function(RC_tidy) {
+  RC <- RC_tidy %>% 
+    dplyr::select(samps, Geneid, Length, counts) %>% #not robust to different types of metadata
+    spread("samps","counts")
+  Geneid=RC$Geneid
+  lengths=RC$Length
+  rawCounts = RC[,3:ncol(RC)] #rawCounts start with 7th column
+  
+  x <- rawCounts/lengths
+  tpm.mat <- t( t(x) * 1e6 / colSums(x) )
+  TPM_out <- data.frame(Geneid, tpm.mat)
+  colnames(TPM_out) <- c("Geneid",colnames(rawCounts))
+  TPM_out
+}
+TPMs <- calcTPM(featureCounts_tidy)
+```
+
+###Now plot the log10TPM+1 distributions
+```{r plotTPM_distros, echo=FALSE}
+
+tpmDensity <- function(TPMs,TPM_title="TPM_density") {
+  #takes in a tidy table of tpms and returns a density plot
+ JF_theme <- theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black"), plot.title = element_text(size = 7, face = "bold"),legend.title=element_text(size=7), legend.text=element_text(size=7), axis.text = element_text(size=7), axis.title.x = element_text(size=7),axis.title.y=element_text(size=7))
+  tpmPlot <- ggplot(TPMs,aes(log10TPM,fill=Samples ))+geom_histogram(alpha=0.3,position="identity",bins=100)+JF_theme+theme(legend.position = c(0.75,0.75))+ggtitle(TPM_title)
+}
+
+
+TPMs_tidy <- gather(TPMs, "samps","TPM",-Geneid)
+TPMs_tidy <- TPMs_tidy %>%
+  mutate(log10TPM=log10(TPM+1))
+TPMs_tidy <- merge(TPMs_tidy, descriptiveNames, by="samps")
+TPMs_tidy <- TPMs_tidy %>%
+  mutate(Samples=descriptiveNames)
+
+TPMdensity <- tpmDensity(TPMs_tidy)
+TPMdensity <- TPMdensity + ylab("# of genes")
+TPMdensity
+```
+
+###Plot the number of genes above TPM threshold=10 and threshold=20
+```{r aboveTPMthreshold, echo=FALSE}
+aboveTPM <- function(TPM_tidy, threshold=10) {
+  #take in a tpm table and a tpm threshold, 
+  tpm_frame <- data.frame(TPM_tidy, tpmFilter=TPM_tidy$TPM >= threshold)
+  tpm_frame <- group_by(tpm_frame, Samples)
+  tpm_aboveFilt <- summarize(tpm_frame, tpmFilter=sum(tpmFilter))
+}
+
+aboveTPM10 <- aboveTPM(TPMs_tidy, threshold=10)
+aboveTPM20 <- aboveTPM(TPMs_tidy, threshold=20)
+
+
+aboveTPM10_plot <- ggplot(aboveTPM10, aes(x=Samples, y=tpmFilter, fill=Samples))+geom_col()+ggtitle("TPM above 10")+JF_theme+xlab("")+theme(legend.position = "none")+theme(axis.text.x = element_text(angle = 45, hjust=1))+ylab("# genes above threshold")
+aboveTPM20_plot <- ggplot(aboveTPM20, aes(x=Samples, y=tpmFilter, fill=Samples))+geom_col()+ggtitle("TPM above 20")+JF_theme+theme(legend.position = "none")+theme(axis.text.x = element_text(angle = 45, hjust=1))+ylab("# genes above threshold")+xlab("")
+
+aboveTPM10_plot
+aboveTPM20_plot
+```
+
+###Plot the distribtion of rawCounts in each sample:
+```{r plotRawDistros, echo=FALSE}
+rawDensity <- ggplot(featureCounts_tidy,aes(log10(counts+1),fill=Samples ))+geom_histogram(alpha=0.3,position="identity",bins=100)+JF_theme+theme(legend.position = c(0.75,0.75))+ggtitle("rawCounts_density")
+rawDensity
+```
+
+
+###Plot the number of genes in each sample above rawCounts=10, 20, 40
+```{r aboveRawThreshold, echo=FALSE}
+aboveRaw <- function(FC_tidy, threshold=10) {
+  #take in a featureCounts table and a raw threshold, 
+  raw_frame <- data.frame(FC_tidy, rawFilter=FC_tidy$counts >= threshold)
+  raw_frame <- group_by(raw_frame, Samples)
+  raw_aboveFilt <- summarize(raw_frame, rawFilter=sum(rawFilter))
+}
+
+aboveRaw10 <- aboveRaw(featureCounts_tidy, threshold=10)
+aboveRaw20 <- aboveRaw(featureCounts_tidy, threshold=20)
+aboveRaw40 <- aboveRaw(featureCounts_tidy, threshold=40)
+
+aboveRaw10_plot <- ggplot(aboveRaw10, aes(x=Samples, y=rawFilter, fill=Samples))+geom_col()+ggtitle("Raw above 10")+JF_theme+theme(legend.position = "none")+theme(axis.text.x = element_text(angle = 45, hjust=1))+ylab("# genes above threshold")+xlab("")
+aboveRaw20_plot <- ggplot(aboveRaw20, aes(x=Samples, y=rawFilter, fill=Samples))+geom_col()+ggtitle("Raw above 20")+JF_theme+theme(legend.position = "none")+theme(axis.text.x = element_text(angle = 45, hjust=1))+ylab("# genes above threshold")+xlab("")
+aboveRaw40_plot <- ggplot(aboveRaw40, aes(x=Samples, y=rawFilter, fill=Samples))+geom_col()+ggtitle("Raw above 40")+JF_theme+theme(legend.position = "none")+theme(axis.text.x = element_text(angle = 45, hjust=1))+ylab("# genes above threshold")+xlab("")
+
+aboveRaw10_plot
+aboveRaw20_plot
+aboveRaw40_plot
+```
+
+###Code to filter a TPM-table either for genes where 1) all samples above a TPM-based filter (filterTPMs)
+###Or 2) genes above a rawCount threshold (defult=10) in a given fraction of samples (default=1/4).
+```{r filter_functions}
+filterTPMs <- function(TPMs, threshold=10) {
+  TPMs_filt <- filter_if(TPMs, is.double, all_vars(. > threshold))
+}
+
+filterRaw <- function(FC_tidy, threshold=10, frac_samples=1/4, experimentTypes, TPMs) {
+  raw_frame <- data.frame(FC_tidy, rawFilter=FC_tidy$counts >= threshold)
+  #First, filter for all samples where a gene passed the raw filter. Then, count the number of instances
+  #Finally, filter for Genes where the number of samples exceeds the cutoff (where gene is above threshold in n/2-1 samples). Then filter the rows of the TPM matrix for gene IDs matching the genes passing the filter.
+  
+  filt_frame <- filter(raw_frame, rawFilter==TRUE)
+  filt_frame <- filt_frame %>%
+    group_by(Geneid) %>%
+    add_count(Geneid)
+  
+  # raw_frame <- group_by(raw_frame, Geneid) %>%
+  #   add_count(rawFilter)
+  sampNames=experimentTypes$samps
+  numSamps <- length(sampNames)
+  sampCutoff <- frac_samples * numSamps
+  GenesOverFilt <- filter(filt_frame, n >= sampCutoff)
+  TPMs_filt <- filter(TPMs, Geneid %in% GenesOverFilt$Geneid)
+}
+
+```
+
+###Calculate and plot Pearson's R correlation coefficient for all genes above a certain raw threshold (here, 10).
+###In a certain fraction of samples (here, 1/4 of samples)
+###Leave mRNA counts and date in the report, remove for the figure version for clarity.
+```{r TPMCorrelationHeatmap}
+TPMs_filtered <- filterRaw(FC_tidy=featureCounts_tidy,threshold=10, frac_samples=1/4, experimentTypes = experimentTypes, TPMs=TPMs)
+numGenesAboveThreshold <- dim(TPMs_filtered)[1]
+numGenesAboveThreshold
+
+cormat <- cor(dplyr::select((TPMs_filtered), -Geneid))
+experimentTypesPlus_mRNACounts <- merge(experimentTypes, total_mRNA_counts, by="Samples")
+anno <- dplyr::select(experimentTypesPlus_mRNACounts, -samps)
+rownames(anno) <- experimentTypesPlus_mRNACounts$samps
+TPM_cor_pheatmap <- pheatmap(cormat, display_numbers = T, color=colorRampPalette(brewer.pal(n=9, name="YlOrRd"))(100), annotation_col=dplyr::select(anno, -Samples), treeheight_row = 10, treeheight_col = 10, show_colnames = F, labels_col = anno$Samples, show_rownames = F, fontsize=7)
+TPM_cor_pheatmap
+
+anno <- dplyr::select(experimentTypesPlus_mRNACounts, -samps, -date, -mRNA_counts)
+rownames(anno) <- experimentTypesPlus_mRNACounts$samps
+TPM_cor_pheatmap_simple <- pheatmap(cormat, display_numbers = T, color=colorRampPalette(brewer.pal(n=9, name="YlOrRd"))(100), annotation_col=dplyr::select(anno, -Samples), treeheight_row = 10, treeheight_col = 10, show_colnames = F, labels_col = anno$Samples, show_rownames = F, fontsize=7)
+TPM_cor_pheatmap_simple
+
+
+anno <- dplyr::select(experimentTypesPlus_mRNACounts, -samps, -date, -mRNA_counts, -genotype)
+rownames(anno) <- experimentTypesPlus_mRNACounts$samps
+TPM_cor_pheatmap_simpler <- pheatmap(cormat, display_numbers = T, color=colorRampPalette(brewer.pal(n=9, name="YlOrRd"))(100), annotation_col=dplyr::select(anno, -Samples), treeheight_row = 10, treeheight_col = 10, show_colnames = F, labels_col = anno$Samples, show_rownames = F, fontsize=7)
+TPM_cor_pheatmap_simpler
+
+
+```
+
+#Filter out samples with fewer than 150000 mRNA-aligned reads (rounded to nearest 1000)
+```{r TPM_heatmap_and_PCA_sample_filtering}
+read_threshold=149500
+featureCounts_tidy_sampFilt <- merge(featureCounts_tidy, total_mRNA_counts, by="Samples") %>%
+  filter(mRNA_counts > read_threshold )
+
+experimentTypes_sampFilt <- filter(experimentTypesPlus_mRNACounts, mRNA_counts > read_threshold)
+
+featureCounts_tidy_sampFilt_forTPMcalc <- dplyr::select(featureCounts_tidy_sampFilt, -mRNA_counts)
+TPMs_sampFilt <- calcTPM(featureCounts_tidy_sampFilt_forTPMcalc)
+
+TPMs_sampFilt <- filterRaw(FC_tidy=featureCounts_tidy_sampFilt,threshold=20, frac_samples=1/5, experimentTypes = experimentTypes_sampFilt, TPMs=TPMs_sampFilt)
+numGenesAboveThreshold <- dim(TPMs_sampFilt)[1]
+numGenesAboveThreshold
+
+cormat_sampFilt <- cor(dplyr::select((TPMs_sampFilt), -Geneid))
+
+anno <- dplyr::select(experimentTypes_sampFilt, -samps, -date, -mRNA_counts, -genotype,-rep)
+rownames(anno) <- experimentTypes_sampFilt$samps
+TPM_cor_pheatmap_sampFilt <- pheatmap(cormat_sampFilt, display_numbers = T, color=colorRampPalette(brewer.pal(n=9, name="YlOrRd"))(100), annotation_col=dplyr::select(anno, -Samples), treeheight_row = 10, treeheight_col = 10, show_colnames = F, labels_row = anno$Samples, show_rownames = F, fontsize=7)
+TPM_cor_pheatmap_sampFilt
+
+
+TPMs_sampFilt.pca <- prcomp(t(dplyr::select((TPMs_sampFilt), -Geneid)))
+TPMs_sampFilt.pca_X_tidy <- data.frame(samps=rownames(TPMs_sampFilt.pca$x), TPMs_sampFilt.pca$x)
+TPMs_sampFilt.pca_X_tidy <- merge(TPMs_sampFilt.pca_X_tidy, experimentTypes_sampFilt, by="samps" )
+
+TPMs_sampFilt.pca.var <- TPMs_sampFilt.pca$sdev^2
+TPMs_sampFilt.pca.var <- round(TPMs_sampFilt.pca.var/sum(TPMs_sampFilt.pca.var)*100,1)
+
+TPMs_sampFilt.PC1v2_plot <- ggplot(TPMs_sampFilt.pca_X_tidy, aes(x=PC1, y=PC2, color=subtype, shape=exp))+geom_point()+xlab(paste("PC1- ",TPMs_sampFilt.pca.var[1],"%", sep=""))+ylab(paste("PC2- ",TPMs_sampFilt.pca.var[2],"%", sep=""))
+TPMs_sampFilt.PC1v2_plot
+TPMs_sampFilt.PC2v3_plot <- ggplot(TPMs_sampFilt.pca_X_tidy, aes(x=PC2, y=PC3, color=subtype, shape=exp))+geom_point()+xlab(paste("PC2- ",TPMs_sampFilt.pca.var[2],"%", sep=""))+ylab(paste("PC3- ",TPMs_sampFilt.pca.var[3],"%", sep=""))
+TPMs_sampFilt.PC2v3_plot
+
+TPMs_sampFilt_tidy <- gather(TPMs_sampFilt, "samps","TPM",-Geneid)
+TPMs_sampFilt_tidy <- merge(TPMs_sampFilt_tidy, experimentTypes_sampFilt, by="samps")
+
+TPMs_sampFilt_vioPlot <- ggplot(TPMs_sampFilt_tidy, aes(x=Samples, y=log10(TPM+1), fill=subtype))+geom_violin()+facet_wrap(~exp, scales="free_x") 
+TPMs_sampFilt_vioPlot
+```
+
+
+#Calculate translation efficiency for CPN and SCPN separately. Also plot TE CPN vs SCPN
+```{r TE_efficiency_calc}
+TE_threshold=log2(2)
+
+aggTPMs_sampFilt <- TPMs_sampFilt_tidy %>%
+  group_by(Geneid, exp, subtype) %>%
+  summarize(aggTPM=mean(TPM+1)) %>%
+  spread(exp,aggTPM) %>%
+  mutate(TE=log2((RP)/(AF)))
+
+# aggTPMs_sampFilt[aggTPMs_sampFilt$TE < TE_threshold,]$aboveThreshold 
+# aggTPMs_sampFilt[aggTPMs_sampFilt$TE < TE_threshold,]$aboveThreshold <- "lower"
+# aggTPMs_sampFilt[aggTPMs_sampFilt$TE > TE_threshold,]$aboveThreshold <- "higher"
+
+aggTPMs_sampFilt <- aggTPMs_sampFilt %>%
+  mutate(threshold=case_when( TE >= TE_threshold ~ "2X higher", TE < TE_threshold & TE > -1*TE_threshold ~ "neither", TE <= -1*TE_threshold ~"2X lower"))
+
+aggTPMs_numThresholded <- aggTPMs_sampFilt %>%
+  group_by(subtype, threshold) %>%
+  summarize(numberOfGenes=n())
+  
+
+TE_distro <- ggplot(aggTPMs_sampFilt, aes(x=TE, fill=threshold))+geom_histogram(binwidth = 0.1)+facet_wrap(~subtype)+JF_theme+scale_fill_manual(values = c("blue", "red","grey"))+JF_theme
+TE_distro
+
+TEby_subtype <- dplyr::select(aggTPMs_sampFilt, Geneid, subtype, TE) %>%
+  spread("subtype","TE")
+
+CPNvsSCPN_TE <- ggplot(TEby_subtype, aes(x=CPN,y=SCPN))+geom_point(size=1, alpha=0.1)+JF_theme+geom_hline(yintercept=1,linetype="dashed")+geom_hline(yintercept=-1,linetype="dashed")+geom_vline(xintercept=1,linetype="dashed")+geom_vline(xintercept=-1,linetype="dashed")+xlab("log2(RP/mRNA), CPN")+ylab("log2(RP/mRNA), SCPN")+xlim(-10,5)+ylim(-10,5)
+CPNvsSCPN_TE
+```
+
+
+```{r RPvsAF_by_subtype}
+FC=1
+
+CPN_aggTPM <- filter(aggTPMs_sampFilt, subtype=="CPN")
+SCPN_aggTPM <- filter(aggTPMs_sampFilt, subtype=="SCPN")
+lFC_AF <- log2(SCPN_aggTPM$AF/CPN_aggTPM$AF)
+lFC_RP <- log2(SCPN_aggTPM$RP/CPN_aggTPM$RP)
+lFC <- data.frame(Geneid=CPN_aggTPM$Geneid, lFC_AF=lFC_AF, lFC_RP=lFC_RP)
+lFC <- lFC %>%
+  mutate(class=case_when( lFC_AF > FC & lFC_RP > FC ~ "Transcription_higher" , lFC_AF < -1*FC & lFC_RP < -1*FC~ "Transcription_lower", lFC_RP > FC & abs(lFC_AF) < FC ~ "Translation_higher", lFC_RP < -1*FC & abs(lFC_AF) < FC ~ "Translation_lower", lFC_AF > FC & abs(lFC_RP) < FC ~ "buffer_higher", lFC_AF < -1*FC & abs(lFC_RP) < FC ~ "buffer_lower", (lFC_AF > FC & lFC_RP < -1*FC | lFC_AF < -1*FC & lFC_RP > FC) ~ "discordant" )) 
+
+lFC_numGenes <- lFC %>%
+  group_by(class) %>%
+  summarize(numGenes=n())
+
+write.csv(lFC, file="lFC_AFvRP_4_2_21.csv", quote=F,row.names = F)
+write.csv(filter(lFC, class=="Translation_higher" | class=="Translation_lower"), file="translation_AFvRP_4_2_21.csv", quote=F,row.names = F)
+write.csv(filter(lFC, class=="Transcription_higher" | class=="Transcription_lower"), file="transcription_AFvRP_4_2_21.csv", quote=F,row.names = F)
+write.csv(filter(lFC, class=="buffer_higher" | class=="buffer_lower"), file="buffer_AFvRP_4_2_21.csv", quote=F,row.names = F)
+write.csv(filter(lFC, class=="discordant"), file="discordant_AFvRP_4_2_21.csv", quote=F,row.names = F)
+
+lFC_plot <- ggplot(lFC, aes(x=lFC_AF,y=lFC_RP, color=class))+geom_point(size=1, alpha=0.5)+JF_theme+xlim(-6,6)+ylim(-6,6)+geom_hline(yintercept=1,linetype="dashed")+geom_hline(yintercept=-1,linetype="dashed")+geom_vline(xintercept=1,linetype="dashed")+geom_vline(xintercept=-1,linetype="dashed")
+lFC_plot
+
+```
+
+
+###Make the counts matrix for DESeq2.
+```{r makeCountsMatrixForDESeq2}
+
+DESeq2_counts_matrix <- featureCounts_tidy_sampFilt %>%
+    dplyr::select(samps, Geneid, counts) %>%
+    spread("samps","counts") %>%
+    filter(Geneid %in% TPMs_sampFilt$Geneid)
+
+rownames(DESeq2_counts_matrix) <- DESeq2_counts_matrix$Geneid
+DESeq2_counts_matrix <- dplyr::select(DESeq2_counts_matrix, -Geneid)
+colData <- dplyr::select(experimentTypes_sampFilt, samps, exp,subtype)
+colData <- dplyr::arrange(colData, samps)
+
+rownames(colData) <- colData$samps
+colData <- dplyr::select(colData, -samps)
+
+```
+
+###Run DESeq2, including an exp:subtype interaction term. The genes with this 
+###interaction term significant are the ones differentially translated. 
+###However, this includes exclusively translated genes, and buffered genes.
+###Need to run DESeq2 separately on the AF (RNA) and RP (Ribo-Seq) data sets
+###To be able to parse out translational regulation from buffering.
+###Update 4/21/21: running one full model: ~exp+subtype+exp:subtype
+###The main effect of exp is translation efficiency (TE) in CPN
+###The main effect of exp+exp:subtype interaction is SCPN TE
+###The main effect of subtype is the RP/AF ratio in CPN
+###The main effect of subtype+exp:subtype interaction is RP/AF in SCPN
+###Awkwardly renaming the results objects to match previous names
+###Using genes that are significant in the subtype main effect as "RNA"
+###and genes significant in the exp comparison as "Ribo". Significant in both
+###is "RNA+Ribo"
+###Write out the Geneids and log2FC for pre-ranked GSEA analysis
+```{r DESeq2}
+sig=0.1
+dds <- DESeqDataSetFromMatrix(countData = DESeq2_counts_matrix, colData = colData, design=~exp+subtype+subtype:exp)
+dds$exp <- factor(dds$exp, levels=c("AF","RP"))
+dds$subtype <- factor(dds$subtype, levels=c("CPN","SCPN"))
+dds <- DESeq(dds)
+res <- results(dds, alpha=sig, name="expRP.subtypeSCPN", independentFiltering =T)
+
+
+#
+#exp_res <- results(dds, contrast=c("exp","RP","AF"), alpha=sig)
+#subtype_res <- results(dds, contrast=c("subtype","SCPN","CPN"), alpha=sig)
+
+delTE_sig <- rownames(res[(res$padj < sig & !is.na(res$padj)),])
+# exp_sig <- rownames(exp_res[(exp_res$padj < sig & !is.na(exp_res$padj)),])
+# subtype_sig <- rownames(subtype_res[(subtype_res$padj < sig & !is.na(subtype_res$padj)),])
+
+# colData_AF <- colData %>%
+#   mutate(samps=rownames(colData)) %>%
+#   filter(exp=="AF")
+# rownames(colData_AF) <- colData_AF$samps
+# colData_AF <- dplyr::select(colData_AF, -samps)
+# 
+# DESeq2_counts_matrix_AF <- featureCounts_tidy_sampFilt %>%
+#     filter(exp=="AF") %>%
+#     dplyr::select(samps, Geneid, counts) %>%
+#     spread("samps","counts") %>%
+#     filter(Geneid %in% TPMs_sampFilt$Geneid)
+# rownames(DESeq2_counts_matrix_AF) <- DESeq2_counts_matrix_AF$Geneid
+# DESeq2_counts_matrix_AF <- dplyr::select(DESeq2_counts_matrix_AF, -Geneid)
+
+#main effect of exp, RP vs AF in CPN
+res_TE_CPN <- results(dds, contrast=c("exp", "RP","AF" ), alpha=sig)
+#exp effect for SCPN
+res_TE_SCPN <- results(dds, contrast=list(c("exp_RP_vs_AF", "expRP.subtypeSCPN" )), alpha=sig)
+#effect of subtype in AF, RP
+res_subtype_AF <- results(dds, contrast=c("subtype","SCPN","CPN"), alpha=sig)
+res_subtype_RP <- results(dds, contrast=list(c("subtype_SCPN_vs_CPN","expRP.subtypeSCPN")), alpha=sig)
+
+res_AF <- res_subtype_AF
+res_RP <- res_subtype_RP
+# dds_AF <- DESeqDataSetFromMatrix(countData = DESeq2_counts_matrix_AF, colData = colData_AF, design=~subtype)
+# dds_AF$exp <- factor(dds_AF$exp, levels=c("AF","RP"))
+# dds_AF$subtype <- factor(dds_AF$subtype, levels=c("CPN","SCPN"))
+# dds_AF <- DESeq(dds_AF)
+# res_AF <- results(dds_AF, alpha=sig, independentFiltering = T)
+delAF_sig <- rownames(res[(res_AF$padj < sig & !is.na(res_AF$padj)),])
+
+# colData_RP <- colData %>%
+#   mutate(samps=rownames(colData)) %>%
+#   filter(exp=="RP")
+# rownames(colData_RP) <- colData_RP$samps
+# colData_RP <- dplyr::select(colData_RP, -samps)
+
+# DESeq2_counts_matrix_RP <- featureCounts_tidy_sampFilt %>%
+#     filter(exp=="RP") %>%
+#     dplyr::select(samps, Geneid, counts) %>%
+#     spread("samps","counts") %>%
+#     filter(Geneid %in% TPMs_sampFilt$Geneid)
+# rownames(DESeq2_counts_matrix_RP) <- DESeq2_counts_matrix_RP$Geneid
+# DESeq2_counts_matrix_RP <- dplyr::select(DESeq2_counts_matrix_RP, -Geneid)
+# 
+# dds_RP <- DESeqDataSetFromMatrix(countData = DESeq2_counts_matrix_RP, colData = colData_RP, design=~subtype)
+# dds_RP$exp <- factor(dds_RP$exp, levels=c("AF","RP"))
+# dds_RP$subtype <- factor(dds_RP$subtype, levels=c("CPN","SCPN"))
+# dds_RP <- DESeq(dds_RP)
+# res_RP <- results(dds_RP, alpha=sig, independentFiltering = T)
+
+delRP_sig <- rownames(res[(res_RP$padj < sig & !is.na(res_RP$padj)),])
+both_sig <- delRP_sig[delRP_sig %in% delAF_sig]
+
+
+
+#lFC <- lFC %>%
+ # mutate(DESeq_class=case_when(Geneid %in% subtype_sig ~ "subtype", Geneid %in% interact_sig ~ "DTEG"))
+lFC <- lFC %>%
+  mutate(AFxRP=lFC_AF*lFC_RP) %>%
+  mutate(DESeq_class=case_when( !(Geneid %in% delTE_sig) & Geneid %in% delAF_sig & Geneid %in% delRP_sig ~ "forwarded",
+ Geneid %in% delTE_sig & !(Geneid %in% delAF_sig) & Geneid %in% delRP_sig  ~ "exclusive",
+ !(Geneid %in% delAF_sig) & Geneid %in% delRP_sig  ~ "intensified",
+ Geneid %in% delAF_sig & !(Geneid %in% delRP_sig)  ~ "buffered"))
+
+
+lFC_plot <- ggplot(lFC, aes(x=lFC_AF,y=lFC_RP, color=DESeq_class))+geom_point(size=0.2, alpha=0.5)+JF_theme+xlim(-6,6)+ylim(-6,6)+geom_hline(yintercept=0,linetype="dashed")+geom_vline(xintercept=0,linetype="dashed")
+lFC_plot
+
+lFC_categories <- table(lFC$DESeq_class) 
+
+write.table(file="resAF_LFC.csv", data.frame(Genid=rownames(res_AF),res_AF$log2FoldChange), quote=F, row.names=F, col.names=F, sep=",")
+write.table(file="resRP_LFC.csv", data.frame(Genid=rownames(res_RP),res_RP$log2FoldChange), quote=F, row.names=F, col.names=F, sep=",")
+
+
+# dds <- DESeqDataSetFromMatrix(countData = DESeq2_counts_matrix, colData =
+# colData, design=~exp+subtype+exp:subtype) 
+# 
+# dds$group <- factor(paste0(colData$exp,colData$subtype)) 
+# design(dds) <- ~ group
+# dds <-DESeq(dds) 
+# res_AF <- results(dds, contrast=c("group","AFCPN","AFSCPN"))
+# res_RP <- results(dds, contrast=c("group","RPCPN","RPSCPN"))
+# res_int <- results(dds, contrast=c("group","AFCPN","RPSCPN"))
+```
+
+###DESq2 with full data set, no filtering;
+```{r DESEQ2_no_filter}
+DESeq2_counts_matrix_full <- featureCounts_tidy_sampFilt %>%
+    dplyr::select(samps, Geneid, counts) %>%
+    spread("samps","counts")
+
+rownames(DESeq2_counts_matrix_full) <- DESeq2_counts_matrix_full$Geneid
+DESeq2_counts_matrix_full <- dplyr::select(DESeq2_counts_matrix_full, -Geneid)
+colData <- dplyr::select(experimentTypes_sampFilt, samps, exp,subtype)
+colData <- dplyr::arrange(colData, samps)
+
+rownames(colData) <- colData$samps
+colData <- dplyr::select(colData, -samps)
+
+sig=0.1
+dds_full <- DESeqDataSetFromMatrix(countData = DESeq2_counts_matrix_full, colData = colData, design=~exp+subtype+subtype:exp)
+dds_full$exp <- factor(dds$exp, levels=c("AF","RP"))
+dds_full$subtype <- factor(dds$subtype, levels=c("CPN","SCPN"))
+dds_full <- DESeq(dds_full)
+
+#main effect of exp, RP vs AF in CPN
+res_TE_CPN_full <- results(dds_full, contrast=c("exp", "RP","AF" ), alpha=sig)
+#exp effect for SCPN
+res_TE_SCPN_full <- results(dds_full, contrast=list(c("exp_RP_vs_AF", "expRP.subtypeSCPN" )), alpha=sig)
+#effect of subtype in AF, RP
+res_subtype_AF_full <- results(dds_full, contrast=c("subtype","SCPN","CPN"), alpha=sig)
+res_subtype_RP_full <- results(dds_full, contrast=list(c("subtype_SCPN_vs_CPN","expRP.subtypeSCPN")), alpha=sig)
+#interaction term, differential TE
+res_full <- results(dds_full, alpha=sig, name="expRP.subtypeSCPN", independentFiltering =T)
+```
+
+
+###Combine DESeq2 results with CPN vs SCPN TE plots, and lFC plots. Also annotate
+###with Gene_Names for readability
+```{r comboPlots}
+
+LFC_fromDESeq <- data.frame(Geneid=rownames(res_full),TE_padj=res_full$padj,AF_padj=res_subtype_AF_full$padj,RP_padj=res_subtype_RP_full$padj,lFC_TE=res_full$log2FoldChange, lFC_AF=res_subtype_AF_full$log2FoldChange, lFC_RP=res_subtype_RP_full$log2FoldChange, TE_CPN=res_TE_CPN_full$log2FoldChange, TE_SCPN=res_TE_SCPN_full$log2FoldChange)
+
+LFC_fromDESeq <- LFC_fromDESeq %>%
+  mutate(translation_category=case_when( TE_padj > sig & AF_padj < sig & RP_padj < sig ~ "forwarded",
+                  TE_padj < sig & AF_padj > sig & RP_padj < sig ~ "exclusive" ,
+                  TE_padj < sig & AF_padj < sig & RP_padj > sig | (TE_padj < sig & AF_padj < sig & RP_padj < sig)  & (lFC_AF*lFC_RP < 0) ~ "counteracted",
+                  (TE_padj < sig & AF_padj < sig & RP_padj < sig) & (lFC_AF*lFC_RP > 0) ~ "intensified"))
+
+LFC_fromDESeq <- LFC_fromDESeq %>%
+  mutate(simpleTrans_cat= case_when(
+    TE_padj < sig & lFC_TE > 0 ~ "TE_higher",
+    TE_padj < sig & lFC_TE < 0 ~ "TE_lower",
+    is.na(TE_padj) ~ "TE_indFilt",
+    TE_padj > sig & TE_padj > sig & AF_padj < sig & RP_padj < sig & lFC_AF > 0 ~ "Forwarded_higher",
+    TE_padj > sig & TE_padj > sig & AF_padj < sig & RP_padj < sig & lFC_AF < 0 ~ "Forwarded_lower",
+  ))
+
+L <- is.na(LFC_fromDESeq$simpleTrans_cat) & !is.na(LFC_fromDESeq$TE_padj) 
+LFC_fromDESeq[L==T,]$simpleTrans_cat <- "no_change"
+
+L <- is.na(LFC_fromDESeq$translation_category) & LFC_fromDESeq$TE_padj < sig
+L[is.na(L)] <- F
+LFC_fromDESeq[L==T,]$translation_category <- "other_DTEG"
+L <- is.na(LFC_fromDESeq$translation_category) & !is.na(LFC_fromDESeq$TE_padj)  
+L[is.na(L)] <- F
+LFC_fromDESeq[L==T,]$translation_category <- "no_change"
+
+LFC_fromDESeq <- LFC_fromDESeq %>%
+  mutate(exp_category=case_when(AF_padj < sig & RP_padj < sig  ~ "RNA+Ribo", 
+                                AF_padj < sig & RP_padj > sig ~ "RNA", 
+                                AF_padj > sig & RP_padj < sig ~ "Ribo",
+                                AF_padj > sig & RP_padj > sig ~ "no_change"))
+
+LFC_fromDESeq <- LFC_fromDESeq %>%
+  mutate(exp_category_detailed=case_when(
+    exp_category == "RNA+Ribo" & lFC_AF > 0 ~ "RNA+Ribo Higher",
+    exp_category == "RNA+Ribo" & lFC_AF < 0 ~ "RNA+Ribo Lower",
+    exp_category == "Ribo" & lFC_RP > 0 ~ "Ribo Higher",
+    exp_category == "Ribo" & lFC_RP < 0 ~ "Ribo Lower",
+    exp_category == "RNA" & lFC_AF > 0 ~ "RNA Higher",
+    exp_category == "RNA" & lFC_AF < 0 ~ "RNA Lower",
+    exp_category =="no_change" ~ "no_change"
+  ))
+
+
+  
+
+  
+  # mutate(broad_category=case_when(TE_padj < sig ~ "DTEG",
+  #        TE_padj > sig & AF_padj < sig & RP_padj < sig ~ "DTG",
+  #        TE_padj < sig & AF_padj < sig & RP_padj < sig ~ "DTEG+DTG"))
+
+LFC_DESeq_plot_trans_cat <- ggplot(filter(LFC_fromDESeq, !is.na(translation_category) & translation_category != "no_change"), aes(x=lFC_AF,y=lFC_RP, color=translation_category))+geom_point(size=0.5, alpha=0.8, shape=19)+JF_theme+xlim(-6,6)+ylim(-6,6)+geom_hline(yintercept=0,linetype="dashed")+geom_vline(xintercept=0,linetype="dashed")+scale_color_manual(values=c("red","blue","purple","black","grey"))
+LFC_DESeq_plot_trans_cat
+
+LFC_DESeq_plot_SimpleTrans_cat <- ggplot(filter(LFC_fromDESeq, simpleTrans_cat != "TE_indFilt"), aes(x=lFC_AF,y=lFC_RP, color=simpleTrans_cat))+geom_point(size=0.4, alpha=0.8, shape=19)+JF_theme+xlim(-4,4)+ylim(-4,4)+geom_hline(yintercept=0,linetype="dashed")+geom_vline(xintercept=0,linetype="dashed")+scale_color_manual(values=c("purple","purple4","gray","red","blue"))
+LFC_DESeq_plot_SimpleTrans_cat
+
+LFC_DESeq_plot_exp_cat <- ggplot(filter(LFC_fromDESeq, !is.na(exp_category)), aes(x=lFC_AF,y=lFC_RP, color=exp_category))+geom_point(size=0.2, alpha=0.7, shape=19)+JF_theme+xlim(-6,6)+ylim(-6,6)+geom_hline(yintercept=0,linetype="dashed")+geom_vline(xintercept=0,linetype="dashed")+scale_color_manual(values=c("gray","red","blue","purple"))
+#LFC_DESeq_plot_exp_cat <- ggplot(filter(LFC_fromDESeq, !is.na(exp_category_detailed)), aes(x=lFC_AF,y=lFC_RP, color=exp_category_detailed))+geom_point(size=0.2, alpha=0.7, shape=19)+JF_theme+xlim(-6,6)+ylim(-6,6)+geom_hline(yintercept=0,linetype="dashed")+geom_vline(xintercept=0,linetype="dashed")
+
+LFC_DESeq_plot_exp_cat
+
+exp_cat_detailed_table <- table(LFC_fromDESeq$exp_category_detailed)
+exp_cat_detailed_table <- data.frame(exp_cat_detailed_table, case=c("no_change","translational","translational","buffered","buffered","transcriptional","transcriptional"))
+exp_cat_detailed_table <- exp_cat_detailed_table %>%
+  dplyr::rename(category=Var1, counts=Freq)
+exp_cat_detailed_table <- exp_cat_detailed_table %>%
+  mutate(percentage=paste(signif(counts/sum(counts)*100,2), "%", sep=" "))
+exp_cat_detailed_plot <- ggplot(exp_cat_detailed_table, aes(x=category,y=counts, fill=case))+JF_theme+geom_col()+scale_fill_manual(values=c("blue","gray","purple","red"))+geom_text(aes(label=percentage, vjust=-0.5))
+
+# LFC_DESeq_plot_broad_cat <- ggplot(filter(LFC_fromDESeq, !is.na(broad_category)), aes(x=lFC_AF,y=lFC_RP, color=broad_category))+geom_point(size=1, alpha=0.5, shape=19)+JF_theme+xlim(-6,6)+ylim(-6,6)+geom_hline(yintercept=0,linetype="dashed")+geom_vline(xintercept=0,linetype="dashed")
+# LFC_DESeq_plot_broad_cat
+
+padj_plot <- ggplot(LFC_fromDESeq, aes(x=log10(AF_padj),y=log10(RP_padj), color=exp_category))+geom_point(size=0.2, alpha=0.7)+JF_theme+xlim(-15,1)+ylim(-15,1)+scale_color_manual(values=c("gray","red","blue","purple"))
+
+LFC_TE_volcano_plot_forDustin <- ggplot(filter(LFC_fromDESeq, simpleTrans_cat != "TE_indFilt"), aes(x=lFC_TE, y=-log10(TE_padj), color=simpleTrans_cat))+geom_point(size=0.5, alpha=0.75)+scale_color_manual(values=c("purple","purple4","gray","red","blue"))+JF_theme+geom_hline(yintercept=-log10(sig),linetype="dashed")
+write.csv(filter(LFC_fromDESeq, simpleTrans_cat!="TE_indFilt"), file="lFCfromDESeq_TE_indFilt_6_8_21.csv", quote=F)
+
+```
+###Load in bedfiles for five_prime and three_prime utrs.
+###Intersect them with the different differential translation categories
+###To create sets of UTR coordinates for sequence extraction, MEME, TOMTOM,FIMO
+###motif analysis
+
+
+
+
+
+
+###Write out genes based on their experimental category (RNA, Ribo, Ribo+RNA)
+```{r write_out_exp_categories}
+write.table(file="CPNvsSCPN_RiboHigher.csv", filter(LFC_fromDESeq, exp_category=="Ribo" & lFC_RP > 0) %>% dplyr::select(Geneid), quote=F, row.names=F, col.names=F)
+write.table(file="CPNvsSCPN_RiboLower.csv", filter(LFC_fromDESeq, exp_category=="Ribo" & lFC_RP < 0) %>% dplyr::select(Geneid), quote=F, row.names=F, col.names=F)
+write.table(file="CPNvsSCPN_RNAHigher.csv", filter(LFC_fromDESeq, exp_category=="RNA" & lFC_AF > 0) %>% dplyr::select(Geneid), quote=F, row.names=F, col.names=F)
+write.table(file="CPNvsSCPN_RNALower.csv", filter(LFC_fromDESeq, exp_category=="RNA" & lFC_AF < 0) %>% dplyr::select(Geneid), quote=F, row.names=F, col.names=F)
+write.table(file="CPNvsSCPN_RiboAndRNAHigher.csv", filter(LFC_fromDESeq, exp_category=="RNA+Ribo" & lFC_RP > 0) %>% dplyr::select(Geneid), quote=F, row.names=F,col.names=F)
+write.table(file="CPNvsSCPN_RiboAndRNALower.csv", filter(LFC_fromDESeq, exp_category=="RNA+Ribo" & lFC_RP < 0) %>% dplyr::select(Geneid), quote=F, row.names=F, col.names=F)
+write.table(file="CPNvsSCPN_AllGenes.csv", LFC_fromDESeq$Geneid, quote=F, row.names=F, col.names=F)
+
+```
+
+
+
+###TopGO results for all 3 ontologies, with p-value adjustment:
+###Plot GOTerm significance for MF, CC ontologies with Ribo and RNA-significant genes 
+```{r TOPGO_padjust, warning=FALSE}
+#General GO objects for analysis:
+allGeneNames_DESeq2 <- dplyr::select(LFC_fromDESeq, Geneid)
+allGeneNames <- allGeneNames_DESeq2
+# AllInterestingGenes <- list(
+#   RNALower=filter(LFC_fromDESeq, exp_category=="RNA" & lFC_AF < 0) %>% dplyr::select(Geneid),
+#   RNAHigher=filter(LFC_fromDESeq, exp_category=="RNA" & lFC_AF > 0) %>% dplyr::select(Geneid),
+#   RiboLower=filter(LFC_fromDESeq, exp_category=="Ribo" & lFC_RP < 0) %>% dplyr::select(Geneid),
+#   RiboHigher=filter(LFC_fromDESeq, exp_category=="Ribo" & lFC_RP > 0) %>% dplyr::select(Geneid),
+#   RNAndRiboLower=filter(LFC_fromDESeq, exp_category=="RNA+Ribo" & lFC_RP < 0) %>% dplyr::select(Geneid),
+#   RNAndRiboHigher=filter(LFC_fromDESeq, exp_category=="RNA+Ribo" & lFC_RP > 0) %>% dplyr::select(Geneid),
+#   TE_higher=filter(LFC_fromDESeq, simpleTrans_cat=="TE_higher") %>% dplyr::select(Geneid),
+#   TE_lower=filter(LFC_fromDESeq, simpleTrans_cat=="TE_lower")
+# )
+
+AllInterestingGenes <- list(
+  RNALower=filter(LFC_fromDESeq, exp_category=="RNA" & lFC_AF < 0) %>% dplyr::select(Geneid),
+  RNAHigher=filter(LFC_fromDESeq, exp_category=="RNA" & lFC_AF > 0) %>% dplyr::select(Geneid),
+  RiboLower=filter(LFC_fromDESeq, exp_category=="Ribo" & lFC_RP < 0) %>% dplyr::select(Geneid),
+  RiboHigher=filter(LFC_fromDESeq, exp_category=="Ribo" & lFC_RP > 0) %>% dplyr::select(Geneid),
+  RNAndRiboLower=filter(LFC_fromDESeq, exp_category=="RNA+Ribo" & lFC_RP < 0) %>% dplyr::select(Geneid),
+  RNAndRiboHigher=filter(LFC_fromDESeq, exp_category=="RNA+Ribo" & lFC_RP > 0) %>% dplyr::select(Geneid)
+)
+interesting_genes <- bind_rows(AllInterestingGenes)
+geneList <-  factor(as.integer(allGeneNames$Geneid %in% interesting_genes$Geneid))
+names(geneList) <- allGeneNames$Geneid
+
+MM_gene_ENSMUSG_MF <- annFUN.org(whichOnto = "MF", mapping = "org.Mm.eg.db", ID = "ensembl")
+MM_gene2GO_ENSMUSG_MF <- inverseList(MM_gene_ENSMUSG_MF)
+geneList <-  factor(as.integer(allGeneNames$Geneid %in% interesting_genes$Geneid))
+names(geneList) <- allGeneNames$Geneid
+MF_GOdata <- new("topGOdata", ontology = "MF", allGenes = geneList,
+annot = annFUN.gene2GO, gene2GO = MM_gene2GO_ENSMUSG_MF, nodeSize=10 )
+
+MM_gene_ENSMUSG_BP <- annFUN.org(whichOnto = "BP", mapping = "org.Mm.eg.db", ID = "ensembl")
+MM_gene2GO_ENSMUSG_BP <- inverseList(MM_gene_ENSMUSG_BP)
+BP_GOdata <- new("topGOdata", ontology = "BP", allGenes = geneList,
+annot = annFUN.gene2GO, gene2GO = MM_gene2GO_ENSMUSG_BP, nodeSize=10 ) 
+
+MM_gene_ENSMUSG_CC <- annFUN.org(whichOnto="CC", mapping = "org.Mm.eg.db", ID = "ensembl")
+MM_gene2GO_ENSMUSG_CC <- inverseList(MM_gene_ENSMUSG_CC)
+CC_GOdata <- new("topGOdata", ontology = "CC", allGenes = geneList,
+annot = annFUN.gene2GO, gene2GO = MM_gene2GO_ENSMUSG_CC, nodeSize=10 ) 
+MM_gene_ENSMUSG_MFCC <- c(MM_gene_ENSMUSG_MF, MM_gene_ENSMUSG_CC)
+
+
+getSigGeneNamesInGOTerm <- function(GOData,GOTerm) {
+  AllGoTerms <- genesInTerm(GOData)
+  sigGenes <- sigGenes(GOData)
+  GOTermGenes <- NULL
+  GOTermGenes$Geneid <- intersect(AllGoTerms[[GOTerm]],sigGenes)
+  GOTermGenes$Gene_name <- mapIds(org.Mm.eg.db,
+                     keys=GOTermGenes$Geneid,
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+  GOTermGenes <- data.frame(GOTermGenes)
+} 
+
+getAnnoGeneNamesInGOTerm <- function(GOdata,GOTerm) {
+  AllGoTerms <- genesInTerm(GOdata)
+  GOTermGenes <- NULL
+  GOTermGenes$Geneid <- AllGoTerms[[GOTerm]]
+  GOTermGenes$Gene_name <- mapIds(org.Mm.eg.db,
+                     keys=GOTermGenes$Geneid,
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+  GOTermGenes <- data.frame(GOTermGenes)
+}
+
+getAnnoGenesInGOTerm <- function(GOdata,GOTerm) {
+  AllGoTerms <- genesInTerm(GOdata)
+  GOTermGenes <- NULL
+  GOTermGenes <- AllGoTerms[[GOTerm]]
+}
+
+adjust_GO_data <- function(GOdata, FDR=0.05, GO_analysis="test_run",ontology=NA) {
+  allGO <- usedGO(GOdata)
+  weight01.fisher <- runTest(GOdata, statistic = "fisher", algorithm = "weight")
+  weight01.fisher.Res <- GenTable(GOdata, weight01.fisher, topNodes=length(allGO))
+  weight01.fisher.Res <- dplyr::rename(weight01.fisher.Res, pval = result1)
+  weight01.fisher.Res$pval <- as.numeric(weight01.fisher.Res$pval)
+  weight01.fisher.Res <- weight01.fisher.Res %>%
+  mutate(GO_Term=paste(GO.ID, Term, sep=" "))
+  
+#weight01.fisher.Res <- data.frame(weight01.fisher.Res)
+weight01.fisher.Res$Term <- fct_reorder(weight01.fisher.Res$Term, weight01.fisher.Res$pval, .desc=T)
+weight01.fisher.Res <- weight01.fisher.Res %>%
+  mutate(BH_padj=p.adjust(pval, method="BH")) %>%
+  filter(BH_padj < FDR) %>%
+  mutate(ontology=ontology) %>%
+  mutate(GO_analysis=GO_analysis)
+
+# AllGOTerms <- t(weight01.fisher.Res %>% dplyr::select(GO.ID))
+# GOTermsWithGenes <- lapply(AllGOTerms, getAnnoGenesInGOTerm, GOdata = GOdata)
+# names(GOTermsWithGenes) <- AllGOTerms
+#GOTermsWithGenes <- bind_rows(GOTermsWithGenes)
+#weight01.fisher.Res <- rbind(weight01.fisher.Res, GOTermsWithGenes)
+
+}
+
+FDR_adjusted_TopGO <- function(interesting_genes, allGeneNames=allGeneNames_DESeq2, MM_gene2GO=MM_gene2GO_ENSMUSG,pval_threshold=0.01, GO_analysis="test_run", FDR=0.05) {
+  
+MM_gene_ENSMUSG_MF <- annFUN.org(whichOnto = "MF", mapping = "org.Mm.eg.db", ID = "ensembl")
+MM_gene2GO_ENSMUSG_MF <- inverseList(MM_gene_ENSMUSG_MF)
+geneList <-  factor(as.integer(allGeneNames$Geneid %in% interesting_genes$Geneid))
+names(geneList) <- allGeneNames$Geneid
+MF_GOdata <- new("topGOdata", ontology = "MF", allGenes = geneList,
+annot = annFUN.gene2GO, gene2GO = MM_gene2GO_ENSMUSG_MF, nodeSize=10 )
+
+MM_gene_ENSMUSG_BP <- annFUN.org(whichOnto = "BP", mapping = "org.Mm.eg.db", ID = "ensembl")
+MM_gene2GO_ENSMUSG_BP <- inverseList(MM_gene_ENSMUSG_BP)
+BP_GOdata <- new("topGOdata", ontology = "BP", allGenes = geneList,
+annot = annFUN.gene2GO, gene2GO = MM_gene2GO_ENSMUSG_BP, nodeSize=10 ) 
+
+MM_gene_ENSMUSG_CC <- annFUN.org(whichOnto="CC", mapping = "org.Mm.eg.db", ID = "ensembl")
+MM_gene2GO_ENSMUSG_CC <- inverseList(MM_gene_ENSMUSG_CC)
+CC_GOdata <- new("topGOdata", ontology = "CC", allGenes = geneList,
+annot = annFUN.gene2GO, gene2GO = MM_gene2GO_ENSMUSG_CC, nodeSize=10 ) 
+MM_gene_ENSMUSG_MFCC <- c(MM_gene_ENSMUSG_MF, MM_gene_ENSMUSG_CC)
+
+MF_GO_res <- adjust_GO_data(MF_GOdata, GO_analysis=GO_analysis, ontology="MF")
+BP_GO_res <- adjust_GO_data(BP_GOdata, GO_analysis=GO_analysis, ontology="BP")
+CC_GO_res <- adjust_GO_data(CC_GOdata, GO_analysis=GO_analysis, ontology="CC")
+
+AllOnto_res <- rbind(MF_GO_res,BP_GO_res,CC_GO_res)
+}
+
+
+
+FDR_adjustedTopGOres <- mapply(FDR_adjusted_TopGO, interesting_genes=AllInterestingGenes, GO_analysis=names(AllInterestingGenes), SIMPLIFY = F)
+FDR_adjustedTopGOres <- bind_rows(FDR_adjustedTopGOres)
+
+FDR_adjustedTopGOres$Term <- fct_reorder(FDR_adjustedTopGOres$Term, FDR_adjustedTopGOres$BH_padj, .desc=T)
+
+CC_plot_notRNAndRiboHigher <- ggplot(filter(FDR_adjustedTopGOres, ontology == "CC" & GO_analysis != "RNAndRiboLower"), aes(x=-log10(BH_padj),y=Term,fill=ontology))+geom_col()+JF_theme+facet_wrap(~GO_analysis, scales="free", ncol=2)
+ MFCC_plot_notRNAndRiboHigher <- ggplot(filter(FDR_adjustedTopGOres, ontology != "BP",  GO_analysis != "RNAndRiboHigher"), aes(x=-log10(BH_padj),y=Term,fill=ontology))+geom_col()+JF_theme+facet_wrap(~GO_analysis, scales="free", ncol=2)
+MFCC_GOplot_RiboRNA_only <- ggplot(filter(FDR_adjustedTopGOres, ontology != "BP",  GO_analysis != "RNAndRiboHigher" & GO_analysis != "RNAndRiboLower"), aes(x=-log10(BH_padj),y=Term,fill=ontology))+geom_col()+JF_theme+facet_wrap(~GO_analysis, scales="free", ncol=2)
+MFCC_plot_RNAndRiboHigher <- ggplot(filter(FDR_adjustedTopGOres, ontology != "BP",  GO_analysis == "RNAndRiboHigher"), aes(x=-log10(BH_padj),y=Term,fill=ontology))+geom_col()+JF_theme+facet_wrap(~ontology, scales="free", ncol=2)
+test_plot <- ggplot(FDR_adjustedTopGOres, aes(x=-log10(BH_padj),y=Term,fill=ontology))+geom_col()+JF_theme+facet_wrap(~GO_analysis, scales="free", ncol=2)
+#test <- FDR_adjusted_TopGO(interesting_genes = filter(LFC_fromDESeq, exp_category=="RNA" & lFC_AF < 0) %>% dplyr::select(Geneid), GO_analysis="RNALower")
+
+MFCC_GOplot_RiboRNA_only 
+
+# test <- filter(FDR_adjustedTopGOres, GO_analysis == "RNAndRiboHigher") %>%
+#   dplyr::select(GO.ID, BH_padj)
+# write.table(file="RiboAndRNA_higher_GO.txt", test, quote=F, row.names=F, col.names=F, sep=" ")
+```
+
+
+###Combine GO data with DESeq2 lFCs to make various comparisons between lFC and 
+##TE for the GO terms, and significant genes within GOTerms. Currently plots
+###TE eCDFs for significant GO-terms with wilcox p-values. 
+```{r GO_map, warning=FALSE}
+
+#make some GO data:
+# MM_gene_ENSMUSG <- annFUN.org(whichOnto = "MF", mapping = "org.Mm.eg.db", ID = "ensembl")
+# MM_gene_ENSMUSG_MF <- annFUN.org(whichOnto = "MF", mapping = "org.Mm.eg.db", ID = "ensembl")
+# MM_gene_ENSMUSG_CC <- annFUN.org(whichOnto = "CC", mapping = "org.Mm.eg.db", ID = "ensembl")
+# MM_gene_ENSMUSG_BP <- annFUN.org(whichOnto = "BP", mapping = "org.Mm.eg.db", ID = "ensembl")
+# MM_gene_ENSMUSG_MFCC <- c(MM_gene_ENSMUSG_MF, MM_gene_ENSMUSG_CC)
+# MM_gene_ENSMUSG_MFCCBP <- c(MM_gene_ENSMUSG_MF, MM_gene_ENSMUSG_CC,MM_gene_ENSMUSG_BP )
+# MM_gene2GO_ENSMUSG_MF <- inverseList(MM_gene_ENSMUSG_MF)
+# MM_gene2GO_ENSMUSG_CC <- inverseList(MM_gene_ENSMUSG_CC)
+# interesting_genes <- bind_rows(AllInterestingGenes)
+# geneList <-  factor(as.integer(allGeneNames$Geneid %in% interesting_genes$Geneid))
+# names(geneList) <- allGeneNames$Geneid
+# 
+# 
+# test_GOres <- adjust_GO_data(GOdata=MF_GOdata)
+LFC_fromDESeq <- LFC_fromDESeq %>%
+  mutate(Gene_Names=mapIds(org.Mm.eg.db,
+                     keys=as.character(Geneid),
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first"))
+
+addGOTermToLFCs <- function(LFC=LFC_fromDESeq, GOdata, GOTerm, Term=GOTerm) {
+   # print(GOTerm)'
+  GOtoGene <- genesInTerm(GOdata, GOTerm)
+  #print(GOTerm)
+  GOTerm_LFC <- LFC %>%
+  filter(Geneid %in% GOtoGene[[GOTerm]]) %>%
+  mutate(GOTerm=GOTerm, Term= Term)
+  
+  
+   # print(GOTerm)
+    #print(cbind(GOTerm_LFC$TE_CPN, GOTerm_LFC$TE_SCPN, digits=2))
+    #print(GOtoGene[[GOTerm]])
+    #TE_test <- wilcox.test(x=as.numeric(GOTerm_LFC$TE_CPN), y=as.numeric(GOTerm_LFC$TE_SCPN), paired=T)
+}
+
+#Function to add a column saying if a Gene is in a GOTerm, unlike addGOTermToLFCs
+#Which just lists all the elements of the LFC corresponding to the GO term,
+#leading to duplicate entries for genes in multiple GO terms (but perfect for many types of analysis)
+annotateLFC_wGOTerm <- function(LFC=LFC_fromDESeq, GOdata, GOTerm, Term=GOTerm){
+  GOtoGene <- genesInTerm(GOdata, GOTerm)
+  GOTerm_LFC <- LFC %>%
+    mutate(GOTerm_status=case_when(
+      Geneid %in% GOtoGene[[GOTerm]] ~ Term
+    ))
+  GOTerm_LFC[is.na(GOTerm_LFC$GOTerm_status)==T,]$GOTerm_status <- "other"
+  GOTerm_LFC
+}
+
+# annotateLFC_wGOTermForVolcano <- function(LFC=LFC_fromDESeq, GOdata, GOTerm, Term=GOTerm){
+#   GOtoGene <- genesInTerm(GOdata, GOTerm)
+#   GOTerm_LFC <- LFC %>%
+#     
+# }
+##Volcano plots aren't half bad!
+ribosomeLFC <- annotateLFC_wGOTerm(GOdata=MF_GOdata, GOTerm="GO:0003735", Term="struc. cons. ribosome")
+ribosomeRibo_volcano_plot <- ggplot(filter(ribosomeLFC, GOTerm_status !="other"), aes(x=lFC_RP, y=-log10(RP_padj), color=GOTerm_status))+geom_point(size=1,alpha=0.5)+JF_theme+geom_hline(yintercept=-log10(sig), linetype="dashed")
+ribosomeAF_volcano_plot <- ggplot(filter(ribosomeLFC, GOTerm_status !="other"), aes(x=lFC_AF, y=-log10(AF_padj), color=GOTerm_status))+geom_point(size=1,alpha=0.5)+JF_theme+geom_hline(yintercept=-log10(sig), linetype="dashed")
+
+# addGOTermToLFCs <- function(LFC=LFC_fromDESeq, GOtoGene=MM_gene_ENSMUSG_MFCC, GOTerm, Term=GOTerm, GO_analysis="sigGenes") {
+#    # print(GOTerm)
+#     GOTerm_LFC <- LFC %>%
+#       filter(Geneid %in% GOtoGene[[GOTerm]]) %>%
+#       mutate(GOTerm=GOTerm, Term= Term, GO_analysis=GO_analysis) 
+#    # print(GOTerm)
+#     #print(cbind(GOTerm_LFC$TE_CPN, GOTerm_LFC$TE_SCPN, digits=2))
+#     #print(GOtoGene[[GOTerm]])
+#     #TE_test <- wilcox.test(x=as.numeric(GOTerm_LFC$TE_CPN), y=as.numeric(GOTerm_LFC$TE_SCPN), paired=T)
+# }
+
+#test <- addGOTermToLFCs(LFC=LFC_fromDESeq, GOtoGene=MM_gene_ENSMUSG_MFCC, GOTerm="GO:0019843",GO_analysis="Test")
+#MyGOTerms <- t(filter(FDR_adjustedTopGOres, GO_analysis == "RiboHigher" & ontology != "BP") %>% dplyr::select(GO.ID))
+AllSigGOTerms <-  t(FDR_adjustedTopGOres %>% filter( ontology != "BP") %>% dplyr::select(GO.ID))
+#AllSigGOTerms <-  t(FDR_adjustedTopGOres %>% dplyr::select(GO.ID))
+MFSigGOTerms <-  t(FDR_adjustedTopGOres %>% filter( ontology == "MF") %>% dplyr::select(GO.ID))
+CCSigGOTerms <-  t(FDR_adjustedTopGOres %>% filter( ontology == "CC") %>% dplyr::select(GO.ID))
+
+MF_SigGOTermsLFC <- bind_rows(lapply(X=MFSigGOTerms, FUN=addGOTermToLFCs, GOdata=MF_GOdata, LFC=LFC_fromDESeq))
+CC_SigGOTermsLFC <- bind_rows(lapply(X=CCSigGOTerms, FUN=addGOTermToLFCs, GOdata=CC_GOdata, LFC=LFC_fromDESeq))
+AllSigGOTermsLFC <- rbind(MF_SigGOTermsLFC, CC_SigGOTermsLFC )
+
+AllSigGOTermsLFC  <- AllSigGOTermsLFC  %>%
+  dplyr::select(-Term) %>%
+  dplyr::rename(GO.ID=GOTerm)
+
+AllSigGOTermsLFC <- merge(AllSigGOTermsLFC, FDR_adjustedTopGOres, by="GO.ID")
+
+wilcox_TE_pvals <- AllSigGOTermsLFC %>%
+  group_by(GO.ID, GO_analysis, ontology) %>%
+  summarize(wilcox_pval=wilcox.test(TE_CPN, TE_SCPN, paired=T, exact=F)$p.value) %>%
+  mutate(wilcox_pval=signif(wilcox_pval, 3))
+
+AllSigGOTermsLFC <- merge(AllSigGOTermsLFC, wilcox_TE_pvals , by=c("GO.ID","GO_analysis","ontology"))
+
+
+test_TE_plot <- ggplot(AllSigGOTermsLFC, aes(x=lFC_TE, color=GO.ID))+stat_ecdf()+facet_wrap(~GO_analysis)+JF_theme+theme(legend.position = "none")
+test_TEpoint_plot <- ggplot(AllSigGOTermsLFC, aes(x=TE_CPN,y=TE_SCPN, color=GO.ID))+geom_point(size=1,alpha=0.5)+facet_wrap(~GO_analysis)+JF_theme+theme(legend.position = "none")+geom_hline(yintercept=0,linetype="dashed")+geom_vline(xintercept=0,linetype="dashed")
+test_RPvsAF_plot <- ggplot(AllSigGOTermsLFC, aes(x=lFC_AF,y=lFC_RP, color=GO.ID))+geom_point(size=1,alpha=0.5)+facet_wrap(~GO_analysis)+JF_theme+theme(legend.position = "none")+geom_hline(yintercept=0,linetype="dashed")+geom_vline(xintercept=0,linetype="dashed")
+
+AllSigGOTermsLFC_TE <- AllSigGOTermsLFC %>%
+  dplyr::select(Geneid, TE_CPN,TE_SCPN, GO_Term, GO_analysis, Term, wilcox_pval) %>%
+  gather(key="subtype",value="TE",-Geneid,-GO_Term, -GO_analysis, -Term, -wilcox_pval)
+
+plot_GO_TE_comparison <- function(LFC) {
+  LFC_for_plotting <- LFC %>%
+  dplyr::select(Geneid, TE_CPN,TE_SCPN, GO_Term, GO_analysis, Term, wilcox_pval) %>%
+  gather(key="subtype",value="TE",-Geneid,-GO_Term, -GO_analysis, -Term, -wilcox_pval)
+  ggplot(LFC_for_plotting, aes(x=TE, color=subtype))+facet_wrap(~Term + wilcox_pval )+stat_ecdf()+JF_theme+geom_hline(yintercept=0.5,linetype="dashed")+geom_vline(xintercept=0,linetype="dashed")+xlim(-1.5,1.5)
+}
+
+RiboLower_TE_plot <- plot_GO_TE_comparison(filter(AllSigGOTermsLFC, GO_analysis == "RiboLower"))
+RiboHigher_TE_plot <- plot_GO_TE_comparison(filter(AllSigGOTermsLFC, GO_analysis == "RiboHigher"))
+RNALower_TE_plot <- plot_GO_TE_comparison(filter(AllSigGOTermsLFC, GO_analysis == "RNALower")) 
+RNAHigher_TE_plot <- plot_GO_TE_comparison(filter(AllSigGOTermsLFC, GO_analysis == "RNAHigher")) 
+
+RiboRNA_GO_TE_comparison_fig <- (RiboLower_TE_plot | RiboHigher_TE_plot) / (RNALower_TE_plot | RNAHigher_TE_plot)+plot_layout(guides = 'collect')+theme(text=element_text("ArialMT")) + plot_annotation(tag_levels = list(c("A","B","C","D"))) & theme(plot.tag=element_text(size=12, face="bold"))
+
+plot_GO_volcano_comparison <- function(LFC, sig=0.1) {
+  AF_plot <- ggplot(LFC, aes(x=lFC_AF, y=-log10(AF_padj), color=Term))+JF_theme+geom_point(size=0.5,alpha=0.5)+geom_hline(yintercept = -log10(sig), linetype="dashed")+ylim(c(0,10))+facet_wrap(~Term)
+  RP_plot <- ggplot(LFC, aes(x=lFC_RP, y=-log10(RP_padj), color=Term))+JF_theme+geom_point(size=0.5,alpha=0.5)+geom_hline(yintercept = -log10(sig), linetype="dashed")+ylim(c(0,10))+facet_wrap(~Term)
+  aplot <- ggplot(LFC, aes(x=lFC_AF, y=lFC_RP, color=Term))+JF_theme+geom_point(size=0.5,alpha=0.5)+geom_hline(yintercept = 0, linetype="dashed")+facet_wrap(~Term)+geom_vline(xintercept = 0, linetype="dashed")
+  
+  volcano_plots <- (AF_plot | RP_plot | aplot )+plot_layout(guides = 'collect')+theme(text=element_text("ArialMT")) + plot_annotation(tag_levels = list(c("mRNA_AF","RPF_RP","aplot"))) & theme(plot.tag=element_text(size=12, face="bold"))
+}
+
+
+
+RiboLower_volcano_plot <- plot_GO_volcano_comparison(filter(AllSigGOTermsLFC, GO_analysis == "RiboLower"))
+RiboHigher_volcano_plot <- plot_GO_volcano_comparison(filter(AllSigGOTermsLFC, GO_analysis == "RiboHigher"))
+RNALower_volcano_plot <- plot_GO_volcano_comparison(filter(AllSigGOTermsLFC, GO_analysis == "RNALower"))
+RNAHigher_volcano_plot <- plot_GO_volcano_comparison(filter(AllSigGOTermsLFC, GO_analysis == "RNAHigher"))
+#RiboRNA_GO_TE_comparison_fig <- (RNALower_TE_plot | RNAHigher_TE_plot)
+
+# test2 <- bind_rows(lapply(AllSigGOTerms, addGOTermToLFCs, GOtoGene=MM_gene_ENSMUSG_MFCC, LFC=LFC_fromDESeq))
+# test3 <- bind_rows(test2)
+# test4 <- test3 %>%
+#   mutate(FC_AF=2^lFC_AF, FC_RP=2^lFC_RP) %>%
+#   group_by(GOTerm, GO_analysis) %>%
+#   summarize(meanLFC_AF=mean(FC_AF), meanLFC_RP=mean(FC_RP)) %>%
+#   mutate(meanLFC_AF=log2(meanLFC_AF), meanLFC_RP=log2(meanLFC_RP) )
+# 
+# test_plot <- ggplot(test4, aes(x=meanLFC_AF, y=meanLFC_RP, color=GOTerm))+JF_theme+geom_hline(yintercept=0,linetype="dashed")+geom_vline(xintercept=0,linetype="dashed")+geom_point()+xlim(c(-1,1))+ylim(c(-1,1))+theme(legend.position = "none") 
+
+
+```
+
+#Write out bedFiles corresponding to the UTRs categories of interest (TEhigher, lower diff genes, genes not in those categories)
+###And the top10 highest and top10 lowest lFC_TEs
+```{r intersectBed}
+#Top10% TEhigher and TE lower.
+a <- filter(LFC_fromDESeq, simpleTrans_cat != "TE_indFilt")
+lFC_TE_deciles <- quantile(a$lFC_TE, probs=seq(0,1,0.1))
+
+LFC_fromDESeq <- filter(LFC_fromDESeq, simpleTrans_cat != "TE_indFilt") %>%
+  mutate(lFC_TE_category=case_when(
+    lFC_TE < lFC_TE_deciles[["10%"]] ~ "10% lower",
+    lFC_TE > lFC_TE_deciles[["10%"]] & lFC_TE < lFC_TE_deciles[["90%"]] ~ "middle",
+    lFC_TE > lFC_TE_deciles[["90%"]] ~ "10% higher",
+  ))
+
+five_utr_bed <- read.table("five_prime_utr.bed", header=T)
+three_utr_bed <- read.table("three_prime_utr.bed", header=T)
+five_utr_LFC <- merge(five_utr_bed, LFC_fromDESeq, by="Geneid")
+three_utr_LFC <- merge(three_utr_bed, LFC_fromDESeq, by="Geneid")
+five_utr_LFC <- five_utr_LFC %>% mutate(length=end-start) %>% filter(length > 10) %>% group_by(Geneid, start, end, chr, score, strand,simpleTrans_cat, lFC_TE_category) %>% summarize()
+three_utr_LFC <- three_utr_LFC %>% mutate(length=end-start) %>% filter(length > 10) %>% group_by(Geneid, start, end, chr, score, strand,simpleTrans_cat, lFC_TE_category) %>% summarize()
+
+five_utr_TEhigher.bed <- five_utr_LFC %>% filter(simpleTrans_cat=="TE_higher") %>% dplyr::select(chr, start, end, Geneid, score, strand)
+five_utr_TEnot_higher.bed <- five_utr_LFC %>% filter(simpleTrans_cat!="TE_higher" & simpleTrans_cat !="TE_indFilt") %>% dplyr::select(chr, start, end, Geneid, score, strand)
+three_utr_TEhigher.bed <- three_utr_LFC %>% filter(simpleTrans_cat=="TE_higher") %>% dplyr::select(chr, start, end, Geneid, score, strand)
+three_utr_TEnot_higher.bed <- three_utr_LFC %>% filter(simpleTrans_cat!="TE_higher" & simpleTrans_cat !="TE_indFilt") %>% dplyr::select(chr, start, end, Geneid, score, strand)
+five_utr_TElower.bed <- five_utr_LFC %>% filter(simpleTrans_cat=="TE_lower") %>% dplyr::select(chr, start, end, Geneid, score, strand)
+five_utr_TEnot_lower.bed <- five_utr_LFC %>% filter(simpleTrans_cat!="TE_lower" & simpleTrans_cat !="TE_indFilt") %>% dplyr::select(chr, start, end, Geneid, score, strand)
+three_utr_TElower.bed <- three_utr_LFC %>% filter(simpleTrans_cat=="TE_lower") %>% dplyr::select(chr, start, end, Geneid, score, strand)
+three_utr_TEnot_lower.bed <- three_utr_LFC %>% filter(simpleTrans_cat!="TE_lower" & simpleTrans_cat !="TE_indFilt") %>% dplyr::select(chr, start, end, Geneid, score, strand)
+
+writeBedFile <- function(bedFile) {
+  bedOut<- data.frame(chr=bedFile$chr, start=bedFile$start, end=bedFile$end, name=bedFile$Geneid, score=bedFile$score, strand=bedFile$strand)
+  outname=deparse(substitute(bedFile))
+  
+  write.table(bedOut, file=outname, row.names = F, col.names = F, quote=F, sep="\t")
+}
+
+writeBedFile(five_utr_TEhigher.bed)
+writeBedFile(five_utr_TEnot_higher.bed) 
+writeBedFile(three_utr_TEhigher.bed)
+writeBedFile(three_utr_TEnot_higher.bed)
+writeBedFile(five_utr_TElower.bed)
+writeBedFile(five_utr_TEnot_lower.bed)
+writeBedFile(three_utr_TElower.bed) 
+writeBedFile(three_utr_TEnot_lower.bed)
+
+five_utr_TEhigher_10pc.bed <- five_utr_LFC %>% filter(simpleTrans_cat !="TE_indFilt" & lFC_TE_category=="10% higher")
+five_utr_TElower_10pc.bed <- five_utr_LFC %>% filter(simpleTrans_cat !="TE_indFilt" & lFC_TE_category=="10% lower")
+three_utr_TEhigher_10pc.bed <- three_utr_LFC %>% filter(simpleTrans_cat !="TE_indFilt" & lFC_TE_category=="10% higher")
+three_utr_TElower_10pc.bed <- three_utr_LFC %>% filter(simpleTrans_cat !="TE_indFilt" & lFC_TE_category=="10% lower")
+writeBedFile(five_utr_TEhigher_10pc.bed)
+writeBedFile(five_utr_TElower_10pc.bed)
+writeBedFile(three_utr_TEhigher_10pc.bed)
+writeBedFile(three_utr_TElower_10pc.bed)
+
+RBPs_of_interest_from_CPNvsSCPN_TOMTOM_noPval_filtr <- c("Rbm41","Tut1","Snrnp70","Pabpn1","Hnrnpk","Igf2bp","Rbm4b","Pprc1","Srsf7",
+"Rbm8a","Snrbp2","Matr3","Eif4b","Rbm5","Cpe4","Samd4","Srsf2","Lin28","Srsf6","Rbm42", "Rbm46","Papbc4","Mbln2","Pum2","Rbfox1","Papbc5","Tardbp","Pcbp3","Ptbp1","Pcb1")
+
+lFC_RBPs_ofInterest_fromCPNvsSCPN_TOMTOM_noPval_filtr <- LFC_fromDESeq %>% filter(Gene_Names %in% RBPs_of_interest_from_CPNvsSCPN_TOMTOM_noPval_filtr)
+
+RBPs_of_interest_fromTEvsNot_pval_filtr <- c("Snrpb2", "Mbnl2", "Ythdc1", "Srsf7","Raly","Cpeb4", "Pspc1","Tia1","U2af2", "Snrbp2", "Pcbp1","Pcbp3","Pcbp2","Rbm46",  "Tardbp","Ybx2", "Rbm42", "Lin28", "Pprc1","Esrp1", "Lin28a", "Hnrnpk", "Qk", "Tut1", "Matr3", "Tut1")
+
+lFC_RBPs_ofInterest_fromTEvsNot_pval_filtr <- LFC_fromDESeq %>% filter(Gene_Names %in% RBPs_of_interest_fromTEvsNot_pval_filtr)
+RBP_ofInterest_for_6_8_labMeeting <- data.frame(lFC_RBPs_ofInterest_fromTEvsNot_pval_filtr )  %>% dplyr::select(Gene_Names, lFC_TE, TE_padj, simpleTrans_cat, exp_category_detailed)
+
+#sGeneid_simpleTrans_cat <- dplyr::select(LFC_fromDESeq, Geneid, simpleTrans_cat)
+
+RBPs_ofInteres_from_10pc <- c("Tia1", "U2af2", "Msi1", "Rbm28","Srsf2", "A1cf","Taf15", "Zc3h10", "Pprc1", "Rbm4b", "Ncl", "Pprc1", "Rbm8a", "Rbm4b", "Pprc1", "Rbm8a", "Fxr2", "Zc3h10", "Hnrnph1", "Zch310", "Rbm4b", "Hnrnph1", "Pprc1", "Pcbp4", "Samd4", "Rbm4b", "Zc3h10", "Rbm8a", "Zc3h10", "Pprc1", "Khdrbs3", "Rbm46", "Srsf3", "Pabpc4", "Syncrip", "Snrnp70", "Snrnp70", "G3bp2", "Ybx2", "Rbfox1", "Rbm46", "Rbmx", "Lin28", "Esrp1", "Samd4", "Srsf2" )
+RBPs_ofInteres_from_10pc_5UTRhigher <- c("Tia1", "U2af2", "Msi1", "Rbm28","Srsf2", "A1cf","Taf15")
+RBPs_ofInteres_from_10pc_5UTRlower <- c("Zc3h10", "Pprc1", "Rbm4b", "Ncl", "Pprc1", "Rbm8a", "Rbm4b", "Pprc1", "Rbm8a", "Fxr2", "Zc3h10", "Hnrnph1", "Zch310", "Rbm4b", "Hnrnph1", "Pprc1", "Pcbp4", "Samd4", "Rbm4b", "Zc3h10", "Rbm8a")
+RBPs_ofInteres_from_10pc_3UTRhigher <- c("Zc3h10", "Pprc1", "Khdrbs3", "Rbm46", "Srsf3", "Pabpc4", "Syncrip", "Snrnp70", "Snrnp70", "G3bp2", "Ybx2", "Rbfox1", "Rbm46", "Rbmx", "Lin28", "Esrp1", "Samd4", "Srsf2")
+
+lFC_RBPs_ofInterest_from_10pc_5UTRhigher <- LFC_fromDESeq %>% filter(Gene_Names %in% RBPs_ofInteres_from_10pc_5UTRhigher ) %>% mutate(motif_enriched_in="5' UTR TEhigher")
+lFC_RBPs_ofInterest_from_10pc_5UTRlower <- LFC_fromDESeq %>% filter(Gene_Names %in% RBPs_ofInteres_from_10pc_5UTRlower ) %>% mutate(motif_enriched_in="5' UTR TElower")
+lFC_RBPs_ofInterest_from_10pc_3UTRhigher <- LFC_fromDESeq %>% filter(Gene_Names %in% RBPs_ofInteres_from_10pc_3UTRhigher )  %>% mutate(motif_enriched_in="3' UTR_TEhigher")
+lFC_RBPs_ofInterest_from_10pc <- rbind(lFC_RBPs_ofInterest_from_10pc_5UTRhigher, lFC_RBPs_ofInterest_from_10pc_5UTRlower  , lFC_RBPs_ofInterest_from_10pc_3UTRhigher)
+lFC_RBPs_ofInterest_from_10pc_forLabMeeting <- lFC_RBPs_ofInterest_from_10pc %>% dplyr::select(Gene_Names, lFC_TE, TE_padj, simpleTrans_cat, exp_category_detailed, motif_enriched_in)
+```
+
+###Pull out all the RBPs, make a list of those that fall into various DE categories
+
+```{r getRBPs}
+
+RBPs <- getAnnoGeneNamesInGOTerm(GOdata = MF_GOdata, GOTerm = "GO:0003723")
+LFC_fromDESeq_RBPs <- filter(LFC_fromDESeq, Geneid %in% RBPs$Geneid & simpleTrans_cat != "TE_indFilt")
+LFC_fromDESeq_RBPs_simpleTrans_cat_sig <- filter(LFC_fromDESeq_RBPs, simpleTrans_cat != "no_change")
+```
+
+
+##Load in the gene counts for motifs of interest, plot lFC_TE as a function of
+##presence/absence of the motif, motif density
+```{r MotitvsTE_efficiency}
+Five_prime <- read.table(file=five_utr, header= T, sep="\t", stringsAsFactors = F)
+Three_prime <- read.table(file=three_utr, header= T, sep="\t", stringsAsFactors = F)
+motif_file="FIMO_6_5_21/AGUUUU_Tia1/AGUUUU_fimo_named.Geneids.txt"
+motif_presence_absence <- function(motif_file=motif_file, lFC=LFC_fromDESeq, motif="AGUUUU", Five_p=Five_prime, Three_p=Three_prime, utr="3UTR", bin_threshold=5) {
+  motif_counts <- read.table(motif_file, header=T, sep=" ")
+  lFC <- lFC %>% mutate(has_motif=case_when(
+     Geneid %in% motif_counts$Geneid == T ~ T,
+     Geneid %in% motif_counts$Geneid ==F ~ F
+   ))
+  motif_counts <- data.frame(motif_counts)
+  five_p_info <- data.frame(Geneid=Five_p$Geneid, Five_UTR_length=Five_p$Length)
+  three_p_info <- data.frame(Geneid=Three_p$Geneid, Three_UTR_length=Three_p$Length)
+  
+   lFC <- merge(lFC, motif_counts, by="Geneid", all=T)
+   lFC[is.na(lFC$motifCounts)==T,]$motifCounts <- 0
+   lFC <- merge(lFC, five_p_info, by="Geneid")
+   lFC <- merge(lFC, three_p_info, by="Geneid")
+   if (utr == "3UTR"){
+    lFC <- lFC %>% mutate(motif_density=motifCounts/Three_UTR_length*1000)
+  } else if ( utr == "5UTR") {
+    lFC <- lFC %>% mutate(motif_density=motifCounts/Five_UTR_length*1000)
+  }
+   lFC$motifCountsBinned <- lFC$motifCounts
+   lFC[lFC$motifCountsBinned >= 5,]$motifCountsBinned <- ">5"
+   lFC <- lFC %>% filter(simpleTrans_cat != "TE_indFilt")
+   
+}
+
+LFC_fromDESeqAGUUUU <- motif_presence_absence(motif_file, motif="AGUUUU")
+
+#lfC_TE broken down by AGUUUU motif status. Table breaking down mean lFC_TE, TE_CPN, TE_SCPN
+#by AGUUUU motif status. 
+#ECDF plot breaking down lFC_TE by number of motifs. The money plots and tables.
+AGUUUU_density_by_simpleTrans_cat_ecdf <- ggplot(LFC_fromDESeqAGUUUU, aes(x=log2(motif_density),color=simpleTrans_cat))+JF_theme+stat_ecdf()+scale_color_manual(values=c("purple","purple4","gray","red","blue"))+ylab("cumulative_fraction")
+AGUUUU_presence_absence_TEecdf_plot <- ggplot(LFC_fromDESeqAGUUUU, aes(x=lFC_TE, color=has_motif))+JF_theme+stat_ecdf()+geom_hline(yintercept=0.5, linetype="dashed")+geom_vline(xintercept=0, linetype="dashed")
+AGUUUU_presence_absence_TEecdf_plot
+AGUUUU_motifCountBinned_TEecdf_plot <- ggplot(LFC_fromDESeqAGUUUU, aes(x=lFC_TE, color=motifCountsBinned))+JF_theme+stat_ecdf()+geom_hline(yintercept=0.5, linetype="dashed")+geom_vline(xintercept=0, linetype="dashed")+xlim(c(-2.5,2.5))+scale_color_manual(values=c("red", "black","blue","green","yellow","orange","red"))
+lFCTEvs_motif_density_plot <- ggplot(filter(LFC_fromDESeqAGUUUU, has_motif==T), aes(x=motif_density,y=lFC_TE))+geom_point(alpha=0.5, size=0.5)+JF_theme+xlim(c(0,3))
+
+logAGUUUU_motif_quintiles <- filter(LFC_fromDESeqAGUUUU, has_motif==T)
+logAGUUUU_motif_quintiles <- quantile(log2(logAGUUUU_motif_quintiles$motif_density),probs=seq(0,1,0.2))
+LFC_fromDESeqAGUUUU <- filter(LFC_fromDESeqAGUUUU) %>%
+  mutate(motif_density_quantile=case_when(
+    logAGUUUU_motif_quintiles[["0%"]] <= log2(motif_density) & log2(motif_density) <= logAGUUUU_motif_quintiles[["20%"]] ~ "1",
+    logAGUUUU_motif_quintiles[["20%"]] <= log2(motif_density) & log2(motif_density) <= logAGUUUU_motif_quintiles[["40%"]] ~ "2",
+    logAGUUUU_motif_quintiles[["40%"]] <= log2(motif_density) & log2(motif_density) <= logAGUUUU_motif_quintiles[["60%"]] ~ "3",
+    logAGUUUU_motif_quintiles[["60%"]] <= log2(motif_density) & log2(motif_density) <= logAGUUUU_motif_quintiles[["80%"]] ~ "4",
+    logAGUUUU_motif_quintiles[["80%"]] <= log2(motif_density) & log2(motif_density) <= logAGUUUU_motif_quintiles[["100%"]] ~ "5",
+    has_motif==F ~ "no_motif",
+  ))
+lFC_TE_by_motif_density_quintile_ecdf <- ggplot(LFC_fromDESeqAGUUUU, aes(x=lFC_TE, color=motif_density_quantile))+JF_theme+stat_ecdf()
+lFC_TE_by_motif_density_quintile <- ggplot(LFC_fromDESeqAGUUUU, aes(y=lFC_TE, x=motif_density_quantile))+JF_theme+geom_boxplot(notch=T)
+logAGUUUU_motif_deciles <- filter(LFC_fromDESeqAGUUUU, has_motif==T)
+logAGUUUU_motif_deciles <- quantile(log2(logAGUUUU_motif_deciles$motif_density),probs=seq(0,1,0.1))
+LFC_fromDESeqAGUUUU <- filter(LFC_fromDESeqAGUUUU) %>%
+  mutate(motif_density_decile=case_when(
+    logAGUUUU_motif_deciles[["0%"]] <= log2(motif_density) & log2(motif_density) <= logAGUUUU_motif_deciles[["10%"]] ~ 1,
+    logAGUUUU_motif_deciles[["10%"]] <= log2(motif_density) & log2(motif_density) <= logAGUUUU_motif_deciles[["20%"]] ~ 2,
+    logAGUUUU_motif_deciles[["20%"]] <= log2(motif_density) & log2(motif_density) <= logAGUUUU_motif_deciles[["30%"]] ~ 3,
+    logAGUUUU_motif_deciles[["30%"]] <= log2(motif_density) & log2(motif_density) <= logAGUUUU_motif_deciles[["40%"]] ~ 4,
+    logAGUUUU_motif_deciles[["40%"]] <= log2(motif_density) & log2(motif_density) <= logAGUUUU_motif_deciles[["50%"]] ~ 5,
+    logAGUUUU_motif_deciles[["50%"]] <= log2(motif_density) & log2(motif_density) <= logAGUUUU_motif_deciles[["60%"]] ~ 6,
+    logAGUUUU_motif_deciles[["60%"]] <= log2(motif_density) & log2(motif_density) <= logAGUUUU_motif_deciles[["70%"]] ~ 7,
+    logAGUUUU_motif_deciles[["70%"]] <= log2(motif_density) & log2(motif_density) <= logAGUUUU_motif_deciles[["80%"]] ~ 8,
+    logAGUUUU_motif_deciles[["80%"]] <= log2(motif_density) & log2(motif_density) <= logAGUUUU_motif_deciles[["90%"]] ~ 9,
+    logAGUUUU_motif_deciles[["90%"]] <= log2(motif_density) & log2(motif_density) <= logAGUUUU_motif_deciles[["100%"]] ~ 10,
+    has_motif==F ~ 0,
+  )) %>%
+  mutate(motif_density_decile_binned=case_when(
+    has_motif==F ~ "no_motif",
+    motif_density_decile <= 8 ~ "bottom 80%",
+    motif_density_decile==9 ~ "80-90th %ile",
+    motif_density_decile==10 ~ "90-100th %ile"
+  ))
+lFC_TE_by_motif_density_decile_ecdf <- ggplot(LFC_fromDESeqAGUUUU, aes(x=lFC_TE, color=motif_density_decile))+JF_theme+stat_ecdf()
+lFC_TE_by_motif_density_decile_binned_ecdf <- ggplot(LFC_fromDESeqAGUUUU, aes(x=lFC_TE, color=motif_density_decile_binned))+JF_theme+stat_ecdf()+xlim(c(-2,2))+scale_color_manual(values=c("pink","red","blue","black"))+ggtitle("lFC_TE by motif density")
+lFC_TE_by_motif_density_decile_binned_ecdf 
+lFC_TE_by_motif_density_decile_plot <- ggplot(LFC_fromDESeqAGUUUU, aes(y=lFC_TE, x=factor(motif_density_decile_binned)))+JF_theme+geom_violin()
+  
+AGUUUU_presence_absence_summary <- LFC_fromDESeqAGUUUU %>%
+  mutate(FC_TE=2^lFC_TE, TE_CPN_unlog=2^TE_CPN, TE_SCPN_unlog=2^TE_SCPN) %>%
+  group_by(has_motif) %>%
+  summarize(mean_lFC_TE=log2(mean(FC_TE)), mean_TE_CPN=log(mean(TE_CPN_unlog)), mean_TE_SCPN=log(mean(TE_SCPN_unlog)))
+
+
+
+#Box plot of motif density broken down by simpleTrans_cat, histogram of number of motifs
+#motif density ecdfs broken down by simpleTrans_cat
+AGUUU_trans_cat_boxplot <- ggplot(filter(LFC_fromDESeqAGUUUU, has_motif== T), aes(x=simpleTrans_cat, y=log2(motif_density), fill=simpleTrans_cat))+geom_boxplot(notch=T)+JF_theme
+AGUUUU_motifCounts_histogram <- ggplot(LFC_fromDESeqAGUUUU, aes(x=motifCounts))+JF_theme+geom_histogram(bins=15)+xlim(c(0,15))
+AGUUU_trans_cat_density_boxplot <- ggplot(filter(LFC_fromDESeqAGUUUU), aes(x=simpleTrans_cat, y=log2(motif_density), fill=simpleTrans_cat))+geom_boxplot(notch=T)+JF_theme
+AGUUU_trans_cat_density_ecdf <- ggplot(filter(LFC_fromDESeqAGUUUU), aes(x=log2(motif_density), color=simpleTrans_cat))+stat_ecdf()+JF_theme
+
+
+#Table breaking down motifCounts, density, UTR lengths, and gene number, all by AGUUUU status. 
+AGUUUU_motif_counts_by_trans_cat <- LFC_fromDESeqAGUUUU %>%
+  group_by(has_motif, simpleTrans_cat) %>%
+  summarize(sumCounts=sum(motifCounts), avgCounts=mean(motifCounts), avgDensity=mean(motif_density), avg3UTR_length=mean(Three_UTR_length), numGenes=n())
+
+motif_file="FIMO_6_5_21/CUGGAGA_Srsf2_3UTR/CUGGAGA_Srsf2_3UTR.Geneids.txt"
+LFC_fromDESeqCUGGAGA <- motif_presence_absence(motif_file, motif="CUGGAGA")
+LFC_fromDESeqCUGGAGA_has_motif <- filter(LFC_fromDESeqCUGGAGA, has_motif==T)
+LFC_fromDESeqCUGGAGA_no_motif <- filter(LFC_fromDESeqCUGGAGA, has_motif==F)
+pval <- signif(wilcox.test(LFC_fromDESeqCUGGAGA_has_motif$lFC_TE, LFC_fromDESeqCUGGAGA_no_motif$lFC_TE)$p.value,3)
+CUGGAGA_presence_absence_lFC_TE_plot <- ggplot(LFC_fromDESeqCUGGAGA, aes(x=lFC_TE, color=has_motif))+JF_theme+stat_ecdf()+ggtitle(paste("wilcox pval: ", pval))
+
+CUGGAGA_lFCTEvs_motif_density_plot <- ggplot(LFC_fromDESeqCUGGAGA_has_motif, aes(x=log2(motif_density), y=lFC_TE))+JF_theme+geom_point()+stat_smooth(method=lm)+geom_hline(yintercept=0,linetype="dashed")+geom_vline(xintercept=0,linetype="dashed")+ggtitle(paste( "R^2=", cor(log2(LFC_fromDESeqCUGGAGA_has_motif$motif_density),LFC_fromDESeqCUGGAGA_has_motif$lFC_TE)))
+  
+  
+  
+  
+motif_file="FIMO_6_5_21/GUUCUU_Tia1_5UTR/GGUUCCU_Tia1_5UTR.Geneids.txt"
+LFC_fromDESeqGGUUCUU <- motif_presence_absence(motif_file, motif="GGUUCUU")
+LFC_fromDESeqGGUUCUU_has_motif <- filter(LFC_fromDESeqGGUUCUU, has_motif==T)
+LFC_fromDESeqGGUUCUU_no_motif <- filter(LFC_fromDESeqGGUUCUU, has_motif==F)
+pval <- signif(wilcox.test(LFC_fromDESeqGGUUCUU_has_motif$lFC_TE, LFC_fromDESeqGGUUCUU_no_motif$lFC_TE)$p.value,3)
+GGUUCUU_presence_absence_lFC_TE_plot <- ggplot(LFC_fromDESeqGGUUCUU, aes(x=lFC_TE, color=has_motif))+JF_theme+stat_ecdf()+ggtitle(paste("wilcox pval: ", pval))
+
+GGUUCUU_lFCTEvs_motif_density_plot <- ggplot(LFC_fromDESeqGGUUCUU_has_motif, aes(x=log2(motif_density), y=lFC_TE))+JF_theme+geom_point()+stat_smooth(method=lm)+geom_hline(yintercept=0,linetype="dashed")+geom_vline(xintercept=0,linetype="dashed")+ggtitle(paste( "R^2=", cor(log2(LFC_fromDESeqGGUUCUU_has_motif$motif_density),LFC_fromDESeqGGUUCUU_has_motif$lFC_TE)))
+```
+
+
+
+
+###Plot counts in CPN, SCPN, AF, RP grouped by GOTerm for significant genes 
+```{r plotCountsForInterestingGenes, warning=FALSE}
+
+getGeneOfInterestCounts <- function(gene="ENSMUSG00000055024", dds=dds) {
+  gene
+expData <- plotCounts(dds=dds, gene=gene, intgroup="exp", returnData = T)
+subtypeData <- plotCounts(dds=dds, gene=gene, intgroup="subtype", returnData = T)
+countData <- data.frame(Sample=rownames(expData), count=expData$count, exp=expData$exp, subtype=subtypeData$subtype, Geneid=gene) %>%
+mutate(Gene_Names=mapIds(org.Mm.eg.db,
+                     keys=as.character(Geneid),
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first"))
+}
+
+plotGeneOfInterestCounts <- function(geneCounts) {
+  geneFacetPlot <- ggplot(geneCounts, aes(x=subtype, y=count, color=factor(exp)))+JF_theme+geom_point(alpha=0.5)+geom_smooth(method="lm", aes(x=as.numeric(subtype),y=count), se=F)+facet_wrap(~Gene_Names, scales="free_y")
+}
+
+plotGeneOfInterestCounts_TE_linear <- function(geneCounts, se=F) {
+  geneFacetPlot <- ggplot(geneCounts, aes(x=exp, y=count, color=factor(subtype)))+JF_theme+geom_point(alpha=0.5)+geom_smooth(method="lm", aes(x=as.numeric(exp),y=count), se=se)+facet_wrap(~Gene_Names, scales="free_y")+scale_color_manual(values=c("orange","blue"))
+}
+# test1 <- getGeneOfInterestCounts(gene="ENSMUSG00000001445", dds=dds)
+# genePlot <- ggplot(test1, aes(x=subtype, y=count, color=factor(exp)))+JF_theme+geom_point(alpha=0.5)+geom_smooth(method="lm", aes(x=as.numeric(subtype),y=count), se=F)+ggtitle(label=test1$Gene_Names[[1]])+scale_y_continuous(trans="log2", limits=c(min(test1$count)/1.5, 1.5*max(test1$count)))+ylab("log2(Counts)")
+# genePlot <- plotGeneOfInterestCounts(test1)
+# genePlot
+###Tia1, Tardbp, Ythdc1
+RBP_names <- c("Tia1","Tardbp","Ythdc1")
+RBP_genes <- filter(AllSigGOTermsLFC, Gene_Names %in% RBP_names) %>%  mutate(Geneid=as.character(Geneid)) %>% dplyr::select(Geneid)
+print("CPN genes plot")
+RBP_genes_counts <- bind_rows(lapply(RBP_genes$Geneid,getGeneOfInterestCounts, dds=dds_full))
+RPB_genes_plot <- plotGeneOfInterestCounts_TE_linear(RBP_genes_counts)
+
+
+###Macklisy molecules
+CPN_geneNames <- c("Bcl11a","Cux1","Cux2","Satb2","Lmo4","Lhx1","Lhx2","Tmtc4")
+CPN_genes <- filter(AllSigGOTermsLFC, Gene_Names %in% CPN_geneNames) %>% mutate(Geneid=as.character(Geneid)) %>% dplyr::select(Geneid)
+SCPN_geneNames <- c("Bcl11b","Crim1","Fezf2","Pcp4","Igfbp4","Cdh13","Sox5")
+SCPN_genes <- filter(AllSigGOTermsLFC, Gene_Names %in% SCPN_geneNames) %>%  mutate(Geneid=as.character(Geneid)) %>% dplyr::select(Geneid)
+print("CPN genes plot")
+CPN_genes_counts <- bind_rows(lapply(CPN_genes$Geneid,getGeneOfInterestCounts, dds=dds_full))
+CPN_genes_plot <- plotGeneOfInterestCounts(CPN_genes_counts)
+CPN_genes_plot
+print("SCPN genes plot")
+SCPN_genes_counts <- bind_rows(lapply(SCPN_genes$Geneid,getGeneOfInterestCounts, dds=dds_full))
+SCPN_genes_plot <- plotGeneOfInterestCounts(SCPN_genes_counts)
+SCPN_genes_plot
+
+##RNALower examples
+structConsRibo_genes <- filter(AllSigGOTermsLFC, GO_analysis=="RNALower" & Term == "structural constituent of ribosome") %>% mutate(Geneid=as.character(Geneid)) %>% dplyr::select(Geneid) 
+structConsRibo_counts <- bind_rows(lapply(structConsRibo_genes$Geneid,getGeneOfInterestCounts, dds=dds_full))
+structConsRibo_plot <- plotGeneOfInterestCounts(structConsRibo_counts)
+
+structConsRiboRNAsig_genes <- filter(AllSigGOTermsLFC, GO_analysis=="RNALower" & Term == "structural constituent of ribosome" & exp_category == "RNA" & lFC_AF < 0) %>% mutate(Geneid=as.character(Geneid)) %>% dplyr::select(Geneid) 
+structConsRiboRNAsig_counts <- bind_rows(lapply(structConsRiboRNAsig_genes$Geneid,getGeneOfInterestCounts, dds=dds_full))
+structConsRiboRNAsig_plot <- plotGeneOfInterestCounts(structConsRiboRNAsig_counts)
+structConsRiboRNAsig_plot
+# 
+# spliceosomeRNAsig_genes <- filter(AllSigGOTermsLFC, GO_analysis=="RNALower" & Term == "spliceosomal complex" & exp_category == "RNA" & lFC_AF < 0 ) %>% mutate(Geneid=as.character(Geneid)) %>% dplyr::select(Geneid) 
+# spliceosomeRNAsig_counts <- bind_rows(lapply(spliceosomeRNAsig_genes$Geneid,getGeneOfInterestCounts, dds=dds))
+# spliceosomeRNAsig_plot <- plotGeneOfInterestCounts(spliceosomeRNAsig_counts)
+# spliceosomeRNAsig_plot
+
+Tardbp_counts <- getGeneOfInterestCounts(gene="ENSMUSG00000041459", dds=dds_full)
+Tardbp_plot <- plotGeneOfInterestCounts(Tardbp_counts)
+Tardbp_TElinearity_plot <- plotGeneOfInterestCounts_TE_linear(Tardbp_counts)
+Tardbp_TElinearity_plot_wSE <- plotGeneOfInterestCounts_TE_linear(Tardbp_counts, se=T)
+TDP43_plots <- (Tardbp_plot  | Tardbp_TElinearity_plot)+plot_layout(guides = 'collect')
+print("Tardbp_plots")
+TDP43_plots
+
+#Plcxd2 seems to go in opposite directions. Check it out
+Plcxd2_counts <- getGeneOfInterestCounts(gene="ENSMUSG00000087141", dds=dds_full)
+Plcxd2_plot <- plotGeneOfInterestCounts(Plcxd2_counts)
+Plcxd2_TElinearity_plot <- plotGeneOfInterestCounts_TE_linear(Plcxd2_counts)
+Plcxd2_TElinearity_plot_wSE <- plotGeneOfInterestCounts_TE_linear(Plcxd2_counts, se=T)
+Plcxd2_plots <- (Plcxd2_plot  | Plcxd2_TElinearity_plot)+plot_layout(guides = 'collect')
+print("Plcxd2_plots")
+Plcxd2_plots
+
+
+##RiboLower examples
+print("RiboLower examples")
+chromatin_Ribosig_genes <- filter(AllSigGOTermsLFC, GO_analysis=="RiboLower" & Term == "chromatin" & exp_category=="Ribo" & lFC_RP < 0) %>% mutate(Geneid=as.character(Geneid)) %>% dplyr::select(Geneid) 
+chromatin_Ribosig_counts <- bind_rows(lapply(chromatin_Ribosig_genes$Geneid,getGeneOfInterestCounts, dds=dds_full))
+chromatin_Ribosig_plot <- plotGeneOfInterestCounts(chromatin_Ribosig_counts)
+print("chromtin")
+chromatin_Ribosig_plot
+
+aGene_geneNames <- c("Tardbp")
+aGene_genes <- filter(AllSigGOTermsLFC, Gene_Names %in% aGene_geneNames) %>% mutate(Geneid=as.character(Geneid)) %>% dplyr::select(Geneid)
+aGene_counts <- bind_rows(lapply(aGene_genes$Geneid,getGeneOfInterestCounts, dds=dds_full))
+aGene_plot <- plotGeneOfInterestCounts(aGene_counts)
+
+print("RNAHigher examples")
+##RNAHigher examples
+dendrite_RNAsig_genes <- filter(AllSigGOTermsLFC, GO_analysis=="RNAHigher" & Term == "dendrite" & exp_category=="RNA" & lFC_AF > 0) %>% mutate(Geneid=as.character(Geneid)) %>% dplyr::select(Geneid) 
+dendrite_RNAsig_counts <- bind_rows(lapply(dendrite_RNAsig_genes$Geneid,getGeneOfInterestCounts, dds=dds_full))
+dendrite_RNAsig_plot <- plotGeneOfInterestCounts(dendrite_RNAsig_counts)
+print("dendrite")
+dendrite_RNAsig_plot
+
+growth_cone_RNAsig_genes <- filter(AllSigGOTermsLFC, GO_analysis=="RNAHigher" & Term == "growth cone" & exp_category=="RNA" & lFC_AF > 0) %>% mutate(Geneid=as.character(Geneid)) %>% dplyr::select(Geneid) 
+growth_cone_RNAsig_counts <- bind_rows(lapply(growth_cone_RNAsig_genes$Geneid,getGeneOfInterestCounts, dds=dds_full))
+growth_cone_RNAsig_plot <- plotGeneOfInterestCounts(growth_cone_RNAsig_counts)
+print("growth cone")
+growth_cone_RNAsig_plot
+
+postsynaptic_density_RNAsig_genes <- filter(AllSigGOTermsLFC, GO_analysis=="RNAHigher" & Term == "postsynaptic density" & exp_category=="RNA" & lFC_AF > 0) %>% mutate(Geneid=as.character(Geneid)) %>% dplyr::select(Geneid) 
+postsynaptic_density_RNAsig_counts <- bind_rows(lapply(postsynaptic_density_RNAsig_genes$Geneid,getGeneOfInterestCounts, dds=dds_full))
+postsynaptic_density_RNAsig_plot <- plotGeneOfInterestCounts(postsynaptic_density_RNAsig_counts)
+print("postsynaptic density")
+postsynaptic_density_RNAsig_plot
+
+##RiboHigher examples
+proton_transmembrane_transporter_activity_RNAsig_genes <- filter(AllSigGOTermsLFC, GO_analysis=="RiboHigher" & Term == "proton transmembrane transporter activit..." & exp_category=="Ribo" & lFC_RP > 0) %>% mutate(Geneid=as.character(Geneid)) %>% dplyr::select(Geneid) 
+proton_transmembrane_transporter_activity_RNAsig_counts <- bind_rows(lapply(proton_transmembrane_transporter_activity_RNAsig_genes$Geneid,getGeneOfInterestCounts, dds=dds_full))
+proton_transmembrane_transporter_activity_RNAsig_plot <- plotGeneOfInterestCounts(proton_transmembrane_transporter_activity_RNAsig_counts)
+print("proton transmembrane transporter activity")
+proton_transmembrane_transporter_activity_RNAsig_plot
+
+GTPase_activity_RNAsig_genes <- filter(AllSigGOTermsLFC, GO_analysis=="RiboHigher" & Term == "GTPase activity" & exp_category=="Ribo" & lFC_RP > 0) %>% mutate(Geneid=as.character(Geneid)) %>% dplyr::select(Geneid) 
+GTPase_activity_RNAsig_counts <- bind_rows(lapply(GTPase_activity_RNAsig_genes$Geneid,getGeneOfInterestCounts, dds=dds_full))
+GTPase_activity_RNAsig_plot <- plotGeneOfInterestCounts(GTPase_activity_RNAsig_counts)
+print("GTPase activity")
+GTPase_activity_RNAsig_plot
+
+
+#genePlot <- ggplot(test1, aes(x=subtype, y=count, color=factor(exp)))+JF_theme+geom_point(alpha=0.5)+geom_smooth(method="lm", aes(x=as.numeric(subtype),y=count), se=F)+ggtitle(label=test1$Gene_Names[[1]])+ylim(min(test1$count)/1.5,1.5*max(test1$count))
+
+# test2 <- test1 %>%
+#   group_by(exp, subtype) %>%
+#   summarize(mean=mean(count)) %>%
+#   gather()
+```
+
+
+###Perform a topGO analysis using genes that show significant subtype:exp interaction terms,
+###Which are genes that directly show differential translation efficiency.
+###However, ~2/3 of genes are being filtered out due to the higher independent filtering
+###threshold with interaction terms, so this analysis uses the set of genes that pass filter as the topGO background. 
+```{r TOPGO_padjust_TE, warning=FALSE}
+allGeneNames_DESeq2_TE_filter <- LFC_fromDESeq %>%
+  filter(!is.na(translation_category)) %>%
+  dplyr::select(Geneid)
+
+# AllInterestingTEGenes <- list(
+#   counteractedLower=filter(LFC_fromDESeq, translation_category=="counteracted" & lFC_TE < 0) %>% dplyr::select(Geneid),
+#   counteractedHiger=filter(LFC_fromDESeq, translation_category=="counteracted" & lFC_TE > 0) %>% dplyr::select(Geneid),
+#   exclusiveLower=filter(LFC_fromDESeq, translation_category=="exclusive" & lFC_TE < 0) %>% dplyr::select(Geneid),
+#   exclusiveHigher=filter(LFC_fromDESeq, translation_category=="exclusive" & lFC_TE > 0) %>% dplyr::select(Geneid),
+#   intensifiedLower=filter(LFC_fromDESeq, translation_category=="intensified" & lFC_TE < 0) %>% dplyr::select(Geneid),
+#   intensifiedHiger=filter(LFC_fromDESeq, translation_category=="intensified" & lFC_TE > 0) %>% dplyr::select(Geneid)
+# )
+
+AllInterestingTEGenes <- list(
+  TELower=filter(LFC_fromDESeq, simpleTrans_cat=="TE_lower") %>% dplyr::select(Geneid),
+  TEHigher=filter(LFC_fromDESeq, simpleTrans_cat=="TE_higher") %>% dplyr::select(Geneid),
+  forwardedHigher=filter(LFC_fromDESeq, simpleTrans_cat=="Forwarded_higher") %>% dplyr::select(Geneid),
+  forwardedLower=filter(LFC_fromDESeq, simpleTrans_cat=="Forwarded_lower") %>% dplyr::select(Geneid)
+)
+
+# AllInterestingTEGenes <- list(
+#   counteractedLower=filter(LFC_fromDESeq, translation_category=="counteracted" & lFC_TE < 0) %>% dplyr::select(Geneid),
+#   counteractedHiger=filter(LFC_fromDESeq, translation_category=="counteracted" & lFC_TE > 0) %>% dplyr::select(Geneid),
+#   exclusiveLower=filter(LFC_fromDESeq, translation_category=="exclusive" & lFC_TE < 0) %>% dplyr::select(Geneid)
+#   
+# )
+
+interesting_TE_genes <- bind_rows(AllInterestingTEGenes)
+geneTEList <-  factor(as.integer(allGeneNames_DESeq2_TE_filter$Geneid %in% interesting_TE_genes$Geneid))
+names(geneTEList) <- allGeneNames_DESeq2_TE_filter$Geneid
+
+FDR_adjustedTopGOres_TE <- mapply(FDR_adjusted_TopGO, interesting_genes=AllInterestingTEGenes, GO_analysis=names(AllInterestingTEGenes), SIMPLIFY = F)
+FDR_adjustedTopGOres_TE <- bind_rows(FDR_adjustedTopGOres_TE)
+
+FDR_adjustedTopGOres_TE$Term <- fct_reorder(FDR_adjustedTopGOres_TE$Term, FDR_adjustedTopGOres_TE$BH_padj, .desc=T)
+
+
+GOTerms_plot_TEforwarded_plot <- ggplot(filter(FDR_adjustedTopGOres_TE, ontology != "BP"), aes(x=-log10(BH_padj),y=Term,fill=ontology))+geom_col()+JF_theme+facet_wrap(~GO_analysis, scales="free", ncol=2)
+GOTerms_plot_TEonly_plot <- ggplot(filter(FDR_adjustedTopGOres_TE, ontology != "BP" & GO_analysis=="TEHigher" | GO_analysis=="TELower"), aes(x=-log10(BH_padj),y=Term,fill=ontology))+geom_col()+JF_theme+facet_wrap(~GO_analysis, scales="free", ncol=2)
+
+GOTerms_plot_TEonly_plot 
+GOTerms_plot_TEforwarded_plot 
+```
+###Plot the TPM distributions for genes that are independent-filtered for the TE
+##analysis versus those that are not.
+
+```{r TPM_expression_by_TE_filter_status}
+mergingFrame <- dplyr::select(LFC_fromDESeq, Geneid, simpleTrans_cat)
+aggTPMs_sampFilt_by_data_type <- aggTPMs_sampFilt %>%
+  dplyr::select(-threshold) %>%
+  gather(key="data",value="expression",-Geneid,-subtype)
+aggTPMs_sampFilt_by_data_type <- merge(aggTPMs_sampFilt_by_data_type, mergingFrame, by="Geneid") %>%
+  mutate(TE_indFilt=case_when(
+    simpleTrans_cat == "TE_indFilt" ~ T,
+    simpleTrans_cat != "TE_indFilt" ~ F
+  ))
+
+TPM_expression_by_TE_indFilt_plot <- ggplot(filter(aggTPMs_sampFilt_by_data_type, data != "TE"), aes(x=subtype,y=log10(expression), fill=TE_indFilt))+JF_theme+geom_violin()+facet_wrap(~data, scales="free")
+```
+
+
+
+###Map the GOTerms derived from the interaction-significant (TE) genes to lFCs
+###Plot the significant categories. 
+```{r GO_mapTE, warning=FALSE}
+AllSigGOTerms_TE <-  t(FDR_adjustedTopGOres_TE %>% filter( ontology != "BP") %>% dplyr::select(GO.ID))
+#AllSigGOTerms_TE <-  t(FDR_adjustedTopGOres_TE %>% dplyr::select(GO.ID))
+MFSigGOTerms_TE <-  t(FDR_adjustedTopGOres_TE %>% filter( ontology == "MF") %>% dplyr::select(GO.ID))
+CCSigGOTerms_TE <-  t(FDR_adjustedTopGOres_TE %>% filter( ontology == "CC") %>% dplyr::select(GO.ID))
+
+MF_SigGOTerms_TELFC <- bind_rows(lapply(X=MFSigGOTerms_TE, FUN=addGOTermToLFCs, GOdata=MF_GOdata, LFC=LFC_fromDESeq))
+CC_SigGOTerms_TELFC <- bind_rows(lapply(X=CCSigGOTerms_TE, FUN=addGOTermToLFCs, GOdata=CC_GOdata, LFC=LFC_fromDESeq))
+AllSigGOTerms_TELFC <- rbind(MF_SigGOTerms_TELFC, CC_SigGOTerms_TELFC )
+
+AllSigGOTerms_TELFC  <- AllSigGOTerms_TELFC  %>%
+  dplyr::select(-Term) %>%
+  dplyr::rename(GO.ID=GOTerm)
+
+AllSigGOTerms_TELFC <- merge(AllSigGOTerms_TELFC, FDR_adjustedTopGOres_TE, by="GO.ID")
+
+wilcox_TE_pvals <- AllSigGOTerms_TELFC %>%
+  group_by(GO.ID, GO_analysis, ontology) %>%
+  summarize(wilcox_pval=wilcox.test(TE_CPN, TE_SCPN, paired=T, exact=F)$p.value) %>%
+  mutate(wilcox_pval=signif(wilcox_pval, 3))
+
+AllSigGOTerms_TELFC <- merge(AllSigGOTerms_TELFC, wilcox_TE_pvals , by=c("GO.ID","GO_analysis","ontology"))
+
+TEHigher_TE_plot <- plot_GO_TE_comparison(filter(AllSigGOTerms_TELFC, GO_analysis == "TEHigher"))
+TELower_TE_plot <- plot_GO_TE_comparison(filter(AllSigGOTerms_TELFC, GO_analysis == "TELower"))
+
+growth_coneLowTE_RNAsig_genes <- filter(AllSigGOTerms_TELFC, GO_analysis=="TELower" & Term == "growth cone" & simpleTrans_cat=="TE_lower" & lFC_TE < 0) %>% mutate(Geneid=as.character(Geneid)) %>% dplyr::select(Geneid) 
+growth_coneLowTE_RNAsig_counts <- bind_rows(lapply(growth_coneLowTE_RNAsig_genes$Geneid,getGeneOfInterestCounts, dds=dds))
+growth_coneLowTE_RNAsig_plot <- plotGeneOfInterestCounts(growth_coneLowTE_RNAsig_counts)
+
+postsynaptic_densityTE_RNAsig_genes <- filter(AllSigGOTerms_TELFC, GO_analysis=="TELower" & Term == "postsynaptic density" & simpleTrans_cat=="TE_lower" & lFC_TE < 0) %>% mutate(Geneid=as.character(Geneid)) %>% dplyr::select(Geneid) 
+postsynaptic_densityTE_RNAsig_counts <- bind_rows(lapply(postsynaptic_densityTE_RNAsig_genes$Geneid,getGeneOfInterestCounts, dds=dds))
+postsynaptic_densityTE_RNAsig_plot <- plotGeneOfInterestCounts(postsynaptic_densityTE_RNAsig_counts)
+
+# neuron_migrationTE_RNAsig_genes <- filter(AllSigGOTerms_TELFC, GO_analysis=="TELower" & Term == "neuron migration" & simpleTrans_cat=="TE_lower" & lFC_TE < 0) %>% mutate(Geneid=as.character(Geneid)) %>% dplyr::select(Geneid) 
+# neuron_migrationTE_RNAsig_counts <- bind_rows(lapply(neuron_migrationTE_RNAsig_genes$Geneid,getGeneOfInterestCounts, dds=dds))
+# neuron_migrationTE_RNAsig_plot <- plotGeneOfInterestCounts(neuron_migrationTE_RNAsig_counts)
+
+
+plasma_membrane_raftTE_RNAsig_genes <- filter(AllSigGOTerms_TELFC, GO_analysis=="TELower" & Term == "plasma membrane raft" & simpleTrans_cat=="TE_lower" & lFC_TE < 0) %>% mutate(Geneid=as.character(Geneid)) %>% dplyr::select(Geneid) 
+plasma_membrane_raftTE_RNAsig_counts <- bind_rows(lapply(plasma_membrane_raftTE_RNAsig_genes$Geneid,getGeneOfInterestCounts, dds=dds))
+plasma_membrane_raftTE_RNAsig_plot <- plotGeneOfInterestCounts(plasma_membrane_raftTE_RNAsig_counts)
+
+growth_coneHighTE_RNAsig_genes <- filter(AllSigGOTerms_TELFC, GO_analysis=="TEHigher" & Term == "growth cone" & simpleTrans_cat=="TE_higher" & lFC_TE > 0) %>% mutate(Geneid=as.character(Geneid)) %>% dplyr::select(Geneid) 
+growth_coneHighTE_RNAsig_counts <- bind_rows(lapply(growth_coneHighTE_RNAsig_genes$Geneid,getGeneOfInterestCounts, dds=dds))
+growth_coneHighTE_RNAsig_plot <- plotGeneOfInterestCounts(growth_coneHighTE_RNAsig_counts)
+
+```
+
+
+```{r diffTE_gene_example_plots}
+
+#TE_higher, all categories represented
+Stathmin_geneNames <- c("Stmn2","Stmn3","Stmn4")
+Stathmin_genes <- filter(AllSigGOTermsLFC, Gene_Names %in% Stathmin_geneNames) %>% mutate(Geneid=as.character(Geneid)) %>% dplyr::select(Geneid)
+Stathmin_genes_counts <- bind_rows(lapply(Stathmin_genes$Geneid,getGeneOfInterestCounts, dds=dds_full))
+Stathmin_genes_plot <- plotGeneOfInterestCounts(Stathmin_genes_counts)
+Stathmin_TE_plot <- plotGeneOfInterestCounts_TE_linear(Stathmin_genes_counts)
+Stathmin_plots <-  Stathmin_genes_plot / Stathmin_TE_plot
+Stathmin_plots 
+
+#TE_higher, intensified
+Neurofilament_geneNames <- c("Nefl","Nefm","Nefh")
+Neurofilament_genes <- filter(AllSigGOTermsLFC, Gene_Names %in% Neurofilament_geneNames) %>% mutate(Geneid=as.character(Geneid)) %>% dplyr::select(Geneid)
+Neurofilament_genes_counts <- bind_rows(lapply(Neurofilament_genes$Geneid,getGeneOfInterestCounts, dds=dds_full))
+Neurofilament_genes_plot <- plotGeneOfInterestCounts(Neurofilament_genes_counts)
+Neurofilament_TE_plot <- plotGeneOfInterestCounts_TE_linear(Neurofilament_genes_counts)
+Neurofilament_plots <- Neurofilament_genes_plot / Neurofilament_TE_plot
+Neurofilament_plots 
+
+Eef1_geneNames <- c("Eef1a2","Eef1b2")
+Eef1_genes <- filter(AllSigGOTermsLFC, Gene_Names %in% Eef1_geneNames) %>% mutate(Geneid=as.character(Geneid)) %>% dplyr::select(Geneid)
+Eef1_genes_counts <- bind_rows(lapply(Eef1_genes$Geneid,getGeneOfInterestCounts, dds=dds_full))
+Eef1_genes_plot <- plotGeneOfInterestCounts(Eef1_genes_counts)
+Eef1_TE_plot <- plotGeneOfInterestCounts_TE_linear(Eef1_genes_counts)
+Eef1_plots <- Eef1_genes_plot / Eef1_TE_plot
+Eef1_plots
+
+Atp5_geneNames <- c("Atp5b","Atp5g3")
+Atp5_genes <- filter(AllSigGOTermsLFC, Gene_Names %in% Atp5_geneNames) %>% mutate(Geneid=as.character(Geneid)) %>% dplyr::select(Geneid)
+Atp5_genes_counts <- bind_rows(lapply(Atp5_genes$Geneid,getGeneOfInterestCounts, dds=dds_full))
+Atp5_genes_plot <- plotGeneOfInterestCounts(Atp5_genes_counts)
+Atp5_TE_plot <- plotGeneOfInterestCounts_TE_linear(Atp5_genes_counts)
+Atp5_plots <- Atp5_genes_plot / Atp5_TE_plot
+Atp5_plots
+
+Grin2b_geneNames <- c("Grin2b")
+Grin2b_genes <- filter(AllSigGOTermsLFC, Gene_Names %in% Grin2b_geneNames) %>% mutate(Geneid=as.character(Geneid)) %>% dplyr::select(Geneid)
+Grin2b_genes_counts <- bind_rows(lapply(Grin2b_genes$Geneid,getGeneOfInterestCounts, dds=dds_full))
+Grin2b_genes_plot <- plotGeneOfInterestCounts(Grin2b_genes_counts)
+Grin2b_TE_plot <- plotGeneOfInterestCounts_TE_linear(Grin2b_genes_counts)
+Grin2b_plots <- Grin2b_genes_plot / Grin2b_TE_plot
+Grin2b_plots
+
+test_geneNames <- c("Grin2b")
+test_genes <- filter(AllSigGOTermsLFC, Gene_Names %in% test_geneNames) %>% mutate(Geneid=as.character(Geneid)) %>% dplyr::select(Geneid)
+test_genes_counts <- bind_rows(lapply(test_genes$Geneid,getGeneOfInterestCounts, dds=dds_full))
+test_genes_plot <- plotGeneOfInterestCounts(test_genes_counts)
+test_TE_plot <- plotGeneOfInterestCounts_TE_linear(test_genes_counts)
+test_plots <- test_genes_plot / test_TE_plot
+test_plots
+```
+
+
+
+###Run RiboWaltz to evaluate 3-nt periodicity in the data sets. 
+###Requires a directory of transcriptome-aligned BamFiles and a gtf
+```{r bamToList, echo=FALSE, warning=FALSE}
+#Try loading in all the files and see how it goes. After a more careful
+#reading of the RiboWaltz vignette, it looks like it will process samples separately.
+
+#make a named vector mapping bamFile names (no path or extension needed) to descriptiveNames
+RP_samps <- filter(experimentTypes, exp=="RP")
+RP_descriptiveNames <- RP_samps$Samples
+names(RP_descriptiveNames) <- RP_samps$samps
+write.csv(file="test337.txt", RP_descriptiveNames)
+
+annotation_dt <- create_annotation(gtfpath = gtf, dataSource = "GRCm38.95",organism="Mus musculus")
+reads_list <- bamtolist(bamfolder = bamFiles, annotation = annotation_dt, transcript_align = FALSE, name_samples = RP_descriptiveNames) 
+```
+
+```{r lengthFilter, echo=FALSE}
+#From last run, need to set length_filter_mode="custom" for "bad" or
+#RNA-seq libraries to get scored. 
+filtered_list <- length_filter(data = reads_list, length_filter_mode = "custom", length_filter_vector = 27:33)
+```
+
+```{r psite, echo=FALSE}
+#perform p-site analysis for all samples, save data to a sub-folder of the transcriptome alignment.
+dir.create(outDir)
+psite_dir <- paste(outDir,'/psite', sep="")
+dir.create(psite_dir)
+psite <- psite(data=filtered_list, plot=T, plot_dir = psite_dir, plot_format = "pdf")
+```
+
+###Make plots that stratify by frame:
+####At first, I plotted using reads_list. This makes plots across all reads lengths
+####Plotting using the length-filtered reads (filtered_list) makes much nicer graphs.
+```{r stratify, echo=FALSE}
+reads_psite_list <- psite_info(filtered_list,psite)
+frames_stratified <- frame_psite_length(reads_psite_list, region="all",cl=90)
+strat_dir <- paste(outDir,"/frame_counts",sep="")
+dir.create(strat_dir)
+#setwd(strat_dir)
+pdfName <- paste(strat_dir, "Frame_counts_all_samples.pdf", sep="/" )
+frames_stratified$plot
+
+pdf(pdfName)
+frames_stratified$plot
+dev.off()
+
+#The plot looks squished if I try plotting all of them on the same plot. Try looping over the sampleNames and making individual plots for each one. Update: If I only include filtered reads, the graphs aren't too squished and are readable
+sampleNames=unique(psite$sample)
+for(sampleName in sampleNames) {
+  frame_stratified=frame_psite_length(reads_psite_list,  sample=sampleName, region="all",cl=90)
+  pdfName=paste(sampleName,".pdf",sep="")
+  pdf(file=pdfName)
+  plot(frame_stratified$plot)
+  dev.off()
+}
+```
+
+###P-site heatmaps (both directly from RiboWaltz, and by re-plotting the RiboWaltz data for a nicer-looking plot) for all samples in current set. 
+###Currently using scale factors as 1/CDS_reads:
+```{r psite_heatmap, echo=FALSE}
+heat_dir <- paste(outDir,"/heatmaps",sep="")
+dir.create(heat_dir)
+#setwd(heat_dir)
+
+#calculate scale factors as the inverse of CDS_counts
+scale_factors <- filter(featureCounts_tidy, exp=="RP") %>%
+  group_by(samps) %>%
+  summarize(CDS_reads=sum(counts)) %>%
+  mutate(scale_factors=1/CDS_reads) %>%
+  dplyr::select(scale_factors)
+scale_factors <- c(t(scale_factors))
+names(scale_factors) <- sampleNames
+
+#Build up the list of sample names
+sampNamesList <- list()
+for (sampName in sampleNames) {
+  sampNamesList[[sampName]] <- c(sampName)
+}
+
+psite_heatmap <- metaheatmap_psite(reads_psite_list, annotation=annotation_dt,log=F,utr5l=15, cdsl=30, utr3l=15, sample=sampNamesList, scale_factors=scale_factors)
+
+psite_heatmap$plot
+
+pdfName=paste(heat_dir, "psite_heatmap.pdf",sep="/")
+pdf(file=pdfName, width=11, height=8.5)
+plot(psite_heatmap$plot)
+dev.off()
+
+
+#Example plotting function that looks nicer than a heatmap:
+psite_signal_plot <- ggplot(psite_heatmap$dt, aes(x=distance,y=reads,color=sample))+geom_line()+JF_theme+facet_wrap(~reg)
+psite_signal_plot
+
+psite_dt <- psite_heatmap$dt
+psite_dt$reg <- plyr::revalue(psite_dt$reg, c("Distance from start (nt)"="from start (nt):","Distance from stop (nt)"="from stop (nt):"))
+
+psite_signal_heat <- ggplot(psite_dt, aes(x=distance,fill=reads,y=sample))+geom_tile()+facet_wrap(~reg)+scale_fill_gradient(low="white", high="black")+JF_theme+xlab("distance from start or stop (nt)")+ylab("")+xlab("")
+psite_signal_heat
+
+#look at how scaling is done. Try row normalization of raw read counts to compute frequencies within the regions of interest
+
+psite_heatmap_raw <- metaheatmap_psite(reads_psite_list, annotation=annotation_dt,log=F,utr5l=15, cdsl=30, utr3l=15, sample=sampNamesList)
+psite_dt_raw <- psite_heatmap_raw$dt
+psite_dt_raw$reg <- plyr::revalue(psite_dt_raw$reg, c("Distance from start (nt)"="from start (nt):","Distance from stop (nt)"="from stop (nt):"))
+
+psite_region_sums <- psite_dt_raw %>%
+  group_by(sample, reg) %>%
+  summarize(region_sum=sum(reads))
+psite_dt_raw <- merge(psite_dt_raw, psite_region_sums, by=c("sample","reg"))
+psite_dt_raw <- psite_dt_raw %>%
+  mutate(freq=reads/region_sum)
+
+psite_freqHeat <- ggplot(psite_dt_raw, aes(x=distance,fill=freq,y=sample))+geom_tile()+facet_wrap(~reg)+scale_fill_gradient(low="white", high="black")+JF_theme+xlab("distance from start or stop (nt)")+ylab("")+xlab("")+theme(legend.position="bottom")
+psite_freqHeat 
+
+pdfName=paste(heat_dir, "psite_freq_heatmap.pdf",sep="/")
+pdf(file=pdfName, width=11, height=8.5)
+plot(psite_freqHeat)
+dev.off()
+
+```
+
+###Next, calculate the percent of P-sites within each reading frame for each sample.
+```{r framePsite, echo=FALSE}
+frame_dir <- paste(outDir,"/frame_psite_percentage",sep="")
+dir.create(frame_dir)
+#setwd(frame_dir)
+
+frame_psites <- frame_psite(reads_psite_list, region="all")
+
+frame_psites$plot
+
+pdfName <- paste(frame_dir, "Frame_percentages_all_samples.pdf", sep="/")
+pdf(pdfName)
+plot(frame_psites$plot)
+dev.off()
+
+sampleNames=unique(psite$sample)
+for(sampleName in sampleNames) {
+  aFramePsite=frame_psite(reads_psite_list, sample=sampleName, region="all")
+  pdfName=paste(sampleName,".pdf",sep="")
+  pdf(file=pdfName)
+  plot(aFramePsite$plot)
+  dev.off()
+}
+```
+
+###And make P-site frequency plots for comparison across samples:
+```{r psitePlotting, echo=FALSE}
+plotFramePsites <- function(samples, frame_psites, sampNames=samples) {
+  #function to take in a list of samples, and frame_psites Ribowaltz object    #Plots the percentage of reads over CDSs in each frame, grouped by samples.
+  FPs <- frame_psites$dt
+  FPsToPlot <- filter(FPs, sample %in% samples & region == "CDS" )
+  FPplot <- ggplot(data=FPsToPlot, aes(x=sample,y=percentage,fill=as.factor(frame)))
+  FPplot <- FPplot+geom_bar(stat="identity", position=position_dodge())+theme_minimal(base_size=18)+scale_fill_discrete(name="frame")+ylim(0,100)+scale_x_discrete(labels=sampNames)+JF_theme
+  FPplot <- FPplot+theme(axis.text.x = element_text(angle = 45, hjust=1))+xlab("")+ylab("%P-sites in each frame")
+                           
+}
+
+#setwd(frame_dir)
+psiteFreq<- plotFramePsites(sampleNames,frame_psites)
+pdfName=paste(frame_dir, "psite_freq.pdf",sep="/")
+pdf(file=pdfName, width=11, height=8.5)
+plot(psiteFreq)
+dev.off()
+
+psiteFreq
+
+```
+
+###Read in the collapsed results from RiboCode, pull out all, novel, uORFs, and dORFs
+```{r read_data}
+res_collapsed <- read.table(file=RiboCodeFile,sep="\t", header=T)
+res_collapsed <- mutate(res_collapsed, start_codon=toupper(start_codon))
+res_collapsed$ORF_type <- factor(res_collapsed$ORF_type, levels=c("uORF","Overlap_uORF","annotated","internal","novel","dORF","Overlap_dORF"))
+uORF_res <- filter(res_collapsed, ORF_type=="uORF" | ORF_type=="Overlap_uORF")
+dORF_res <- filter(res_collapsed, ORF_type=="dORF" | ORF_type=="Overlap_dORF")
+novel_res <- filter(res_collapsed, ORF_type=="novel")
+internal_res <- filter(res_collapsed, ORF_type=="internal")
+```
+
+###plot the number of each ORF_type for all ORFs, ATG, and nonATG ORFs, and the lengths of all ORFs
+```{r plot_numbers}
+plotORF_counts <- function(res, title="") {
+ORF_type_counts <- res %>%
+  group_by(ORF_type) %>%
+  summarize(count=n())
+
+ORF_type_plot <- ggplot(ORF_type_counts, aes(x=ORF_type, y=count, fill=ORF_type))+geom_col()+JF_theme+ylab("No. of ORFs")+geom_text(aes(label=count))+ggtitle(title)+theme(axis.text.x = element_text(angle = 45, hjust=1))+theme(legend.position = "none")+xlab("")
+}
+
+ORF_type_plot <- plotORF_counts(res=res_collapsed, "All start_codons")
+ORF_type_plot 
+
+ATG_res <- filter(res_collapsed, start_codon=="ATG")
+ATG_type_plot <- plotORF_counts(ATG_res,"start=ATG")
+ATG_type_plot
+
+nonATG_res <- filter(res_collapsed, start_codon!="ATG")
+nonATG_type_plot <- plotORF_counts(nonATG_res,"start=NTG")
+nonATG_type_plot
+
+ORF_length_plot <- ggplot(res_collapsed, aes(x=ORF_length, fill=ORF_type, color=ORF_type, after_stat(count)))+geom_density(alpha=0.5, position="stack")+JF_theme+scale_x_continuous(trans = 'log10', breaks=c(10,20,50,100,200,500,1000,2000,5000,10000,200000,50000,100000))
+ORF_length_plot
+ORF_length_ecdf_plot <- ggplot(res_collapsed, aes(x=ORF_length, color=ORF_type))+stat_ecdf()+JF_theme+scale_x_continuous(trans = 'log10',breaks=c(10,50,100,500,1000,5000,10000))+ylab("cumlative_fraction")+scale_x_log10(limits = c(10,1e4))+xlab("ORF_length (nt)")+theme(legend.position="top")
+ORF_length_ecdf_plot
+```
+###Plot the distribution of start codons for the difference ORF_types, and the gene types for novel ORFs
+```{r startCodon_distro}
+ORF_typeAndstart <- res_collapsed %>% 
+  group_by(ORF_type, start_codon) %>%
+  summarize(count=n()) %>%
+  mutate(frac =count/sum(count))
+
+ORF_startByType_plot <- ggplot(ORF_typeAndstart, aes(x=ORF_type,y=frac, fill=start_codon))+geom_col(position="stack")+JF_theme+ylab("%start each start")+xlab("")+theme(axis.text.x = element_text(angle = 45, hjust=1))+theme(legend.position="top")
+ORF_startByType_plot
+```
+###Write out the transcriptIDs for all d- and u- ORFs. Also write out all ORFs as a background, and novel internal ORFs. Plot the gene_types for novel ORFs
+```{r write_TxIDs}
+writeORFtypeTxIDs <- function(res, ORF="annotated", name="ORF_txIDs.txt") {
+  TxIDs <- filter(res, ORF_type==ORF) %>%
+    dplyr::select(transcript_id)
+  write.table(TxIDs,file=name,quote=F, row.names=F, col.names=F)
+}
+write.table(res_collapsed$transcript_id, file="All_ORF_txIDs.txt", quote=F,row.names=F, col.names=F)
+
+writeORFtypeTxIDs(res_collapsed,ORF="uORF",name=paste(outDir, "uORF_txIDs.txt", sep="/"))
+writeORFtypeTxIDs(res_collapsed,ORF="Overlap_uORF",name=paste(outDir, "Overlap_uORF_txIDs.txt", sep="/"))
+writeORFtypeTxIDs(res_collapsed,ORF="dORF",name=paste(outDir, "dORF_txIDs.txt", sep="/"))
+writeORFtypeTxIDs(res_collapsed,ORF="Overlap_dORF",name=paste(outDir, "Overlap_dORF_txIDs.txt", sep="/"))
+writeORFtypeTxIDs(res_collapsed,ORF="novel",name=paste(outDir, "novel_ORF_txIDs.txt", sep="/"))
+writeORFtypeTxIDs(res_collapsed,ORF="internal",name=paste(outDir, "internal_ORF_txIDs.txt", sep="/"))
+
+novel_gene_type <- novel_res %>%
+  group_by(gene_type) %>%
+  summarize(count=n())
+novel_gene_type_plot <- ggplot(novel_gene_type, aes(x=gene_type, y=count, fill=gene_type))+geom_col()+JF_theme+ylab("Number of ORFs")+theme(axis.text.x=element_text( angle = 45, hjust=1))
+novel_gene_type_plot
+```
+
+
+###Run DESeq2 on the uORF counts in SCPN vs CPN.
+```{r uORF_DESeq2}
+
+ORF_counts_tidy <- read.table("ORFcounts/ORF_counts.tidy.txt", header=T, stringsAsFactors = T)
+ORF_counts_tidy_res <- merge(ORF_counts_tidy, res_collapsed, by="ORF_ID")
+uORF_counts_tidy_smol <- ORF_counts_tidy_res %>%
+  mutate(samps=Sample, Counts=as.numeric(Counts), samps=factor(samps)) %>%
+  dplyr::select(ORF_ID, gene_id, Counts, samps, ORF_type, gene_name, ORF_tstart, ORF_tstop) %>%
+  filter(ORF_type=="uORF" | ORF_type=="Overlap_uORF")
+
+uORF_counts_tidy_smol <- merge(uORF_counts_tidy_smol, experimentTypes, by="samps")
+
+uORF_counts_matrix <- uORF_counts_tidy_smol %>%
+  filter(samps %in% experimentTypes_sampFilt$samps) %>%
+  dplyr::select(samps, ORF_ID, Counts) %>%
+  spread(samps,Counts)
+rownames(uORF_counts_matrix) <- uORF_counts_matrix$ORF_ID
+uORF_counts_matrix <- uORF_counts_matrix %>% dplyr::select(-ORF_ID)
+
+uORF_colData <- dplyr::select(experimentTypes_sampFilt, samps, exp,subtype)
+uORF_colData <- dplyr::arrange(uORF_colData, samps)
+
+rownames(uORF_colData) <- uORF_colData$samps
+uORF_colData <- dplyr::select(uORF_colData, -samps)
+
+dds_uORF <- DESeqDataSetFromMatrix(countData = uORF_counts_matrix, colData = uORF_colData, design=~exp+subtype+subtype:exp)
+dds_uORF$exp <- factor(dds_uORF$exp, levels=c("AF","RP"))
+dds_uORF$subtype <- factor(dds_uORF$subtype, levels=c("CPN","SCPN"))
+dds_uORF <- DESeq(dds_uORF)
+res_uORF_RP <- results(dds_uORF, contrast=list(c("subtype_SCPN_vs_CPN","expRP.subtypeSCPN")), alpha=sig)
+res_uORF_AF <- results(dds_uORF, contrast=c("subtype","SCPN","CPN"), alpha=sig)
+
+
+uORF_RP_counts_matrix <- uORF_counts_tidy_smol %>%
+  filter(exp=="RP") %>%
+  filter(samps %in% experimentTypes_sampFilt$samps) %>%
+  dplyr::select(samps, ORF_ID, Counts) %>%
+  spread(samps,Counts)
+rownames(uORF_RP_counts_matrix) <- uORF_RP_counts_matrix$ORF_ID
+uORF_RP_counts_matrix <- uORF_RP_counts_matrix %>% dplyr::select(-ORF_ID)
+
+uORF_RP_colData <- filter(experimentTypes_sampFilt, exp=="RP") %>%
+  dplyr::select(samps, exp,subtype)
+uORF_RP_colData <- dplyr::arrange(uORF_RP_colData, samps)
+rownames(uORF_RP_colData) <- uORF_RP_colData$samps
+uORF_RP_colData <- dplyr::select(uORF_RP_colData, -samps)
+
+dds_uORF_RP <- DESeqDataSetFromMatrix(countData = uORF_RP_counts_matrix, colData = uORF_RP_colData, design=~subtype)
+dds_uORF_RP$subtype <- factor(dds_uORF_RP$subtype, levels=c("CPN","SCPN"))
+dds_uORF_RP <- DESeq(dds_uORF_RP)
+res_uORF_RPonly <- results(dds_uORF_RP, alpha=sig)
+res_uORF_RPonly_df <- data.frame(ORF_ID=rownames(res_uORF_RPonly), res_uORF_RPonly)
+
+
+uORF_RP_LFCfromDESeq2 <- uORF_counts_tidy_smol %>% filter(exp=="RP")
+uORF_RP_LFCfromDESeq2 <- merge(uORF_RP_LFCfromDESeq2, res_uORF_RPonly_df, by="ORF_ID")
+uORF_RP_LFCfromDESeq2_sig <- filter(uORF_RP_LFCfromDESeq2, padj < sig)
+
+
+
+###Best NOT to use the annotated counts from RiboCode for analysis, because
+###it only uses reads aligning to ORFs, and because it is a "transcript level".
+###This will undercount reads in the AF samples (as reads align outside the ORF)
+###and undercounts everything because it tries to assign reads to particular transcripts instead of aggregating across the whole gene. 
+
+annotated_counts_tidy_smol <- ORF_counts_tidy_res %>%
+  mutate(samps=Sample, Counts=as.numeric(Counts), samps=factor(samps)) %>%
+  dplyr::select(ORF_ID, gene_id, Counts, samps, ORF_type, gene_name, ORF_tstart, ORF_tstop) %>%
+  filter(ORF_type=="annotated")
+
+annotated_counts_matrix <- annotated_counts_tidy_smol %>%
+  filter(samps %in% experimentTypes_sampFilt$samps) %>%
+  dplyr::select(samps, ORF_ID, Counts) %>%
+  spread(samps,Counts)
+rownames(annotated_counts_matrix) <- annotated_counts_matrix$ORF_ID
+annotated_counts_matrix <- annotated_counts_matrix %>% dplyr::select(-ORF_ID)
+
+annotated_colData <- dplyr::select(experimentTypes_sampFilt, samps, exp,subtype)
+annotated_colData <- dplyr::arrange(annotated_colData, samps)
+
+rownames(annotated_colData) <- annotated_colData$samps
+annotated_colData <- dplyr::select(annotated_colData, -samps)
+
+dds_annotated <- DESeqDataSetFromMatrix(countData = annotated_counts_matrix, colData = annotated_colData, design=~exp+subtype+subtype:exp)
+dds_annotated$exp <- factor(dds_annotated$exp, levels=c("AF","RP"))
+dds_annotated$subtype <- factor(dds_annotated$subtype, levels=c("CPN","SCPN"))
+dds_annotated <- DESeq(dds_annotated)
+res_annotated_RP <- results(dds_annotated, contrast=list(c("subtype_SCPN_vs_CPN","expRP.subtypeSCPN")), alpha=sig)
+res_annotated_AF <- results(dds_annotated, contrast=c("subtype","SCPN","CPN"), alpha=sig)
+
+# dds <- DESeqDataSetFromMatrix(countData = DESeq2_counts_matrix, colData = colData, design=~exp+subtype+subtype:exp)
+# dds$exp <- factor(dds$exp, levels=c("AF","RP"))
+# dds$subtype <- factor(dds$subtype, levels=c("CPN","SCPN"))
+# dds <- DESeq(dds)
+# res <- results(dds, alpha=sig, name="expRP.subtypeSCPN", independentFiltering =T)
+
+```
+
+###Combine uORF and transcript DESeq2 results. 
+```{r uORF_comboPlots}
+
+uORF_RP_LFCfromDESeq2_smol <- uORF_RP_LFCfromDESeq2 %>%
+  mutate(Geneid=gene_id, lFC_uORF_RP=log2FoldChange, uORF_RP_padj=padj) %>%
+  dplyr::select(Geneid, lFC_uORF_RP,  uORF_RP_padj, ORF_ID)
+uORF_RP_LFCfromDESeq2_smol <- distinct(uORF_RP_LFCfromDESeq2_smol)
+
+# uORFandGene_level_LFCfromDESeq2 <- LFC_fromDESeq %>%
+#   mutate(has_uORF=case_when(
+#     Geneid %in% uORF_RP_LFCfromDESeq2_smol$Geneid
+#   ))
+
+#uORFandGene_level_LFCfromDESeq2 <- merge(distinct(uORF_RP_LFCfromDESeq2_smol), LFC_fromDESeq, by="Geneid")
+uORFandGene_level_LFCfromDESeq2 <- merge(distinct(uORF_RP_LFCfromDESeq2_smol), LFC_fromDESeq, by="Geneid", all.y=T) 
+uORFandGene_level_LFCfromDESeq2 <- uORFandGene_level_LFCfromDESeq2 %>%
+  mutate(uORF_category=case_when(
+    uORF_RP_padj < sig & lFC_uORF_RP > 0 ~ "uORF_Higher",
+    uORF_RP_padj < sig & lFC_uORF_RP < 0 ~ "uORF_Lower",
+    is.na(ORF_ID)==T ~"no_uORF",
+    is.na(ORF_ID) ==F & uORF_RP_padj > sig | is.na(uORF_RP_padj)==T ~"uORF_not_sig"
+  )) %>%
+  mutate(has_uORF=case_when(
+    uORF_category != "no_uORF"~ T,
+    uORF_category == "no_uORF"~ F
+  )) %>%
+  mutate(Gene_Names=mapIds(org.Mm.eg.db,
+                     keys=as.character(Geneid),
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first"))
+
+
+
+uORF_exp_category_summary <- table(dplyr::select(uORFandGene_level_LFCfromDESeq2, exp_category_detailed, uORF_category ))
+uORF_TE_category_summary <- table(dplyr::select(uORFandGene_level_LFCfromDESeq2, simpleTrans_cat, uORF_category ))
+
+has_uORFand_wellTranscribed <- filter(uORFandGene_level_LFCfromDESeq2, is.na(uORF_RP_padj)== F & simpleTrans_cat != "TE_indFilt")
+uORF_TE_cat_summary_well_transcribed <- table(has_uORFand_wellTranscribed$uORF_category,has_uORFand_wellTranscribed$simpleTrans_cat )
+uORF_TE_cat_summary_well_transcribed 
+
+reciprocal_changes <- filter(has_uORFand_wellTranscribed, (simpleTrans_cat=="TE_higher" & uORF_category=="uORF_Lower" ) | (simpleTrans_cat=="TE_lower" & uORF_category=="uORF_Higher"))
+reciprocal_geneNames <- c("Eif4g1", "Tuba1a","Plcxd2")
+reciprocal_genes <- filter(AllSigGOTermsLFC, Gene_Names %in% reciprocal_geneNames) %>% mutate(Geneid=as.character(Geneid)) %>% dplyr::select(Geneid)
+reciprocal_genes_counts <- bind_rows(lapply(reciprocal_genes$Geneid,getGeneOfInterestCounts, dds=dds_full))
+reciprocal_genes_plot <- plotGeneOfInterestCounts(reciprocal_genes_counts)
+reciprocal_TE_plot <- plotGeneOfInterestCounts_TE_linear(reciprocal_genes_counts)
+reciprocal_plots <- reciprocal_genes_plot / reciprocal_TE_plot
+reciprocal_plots
+
+
+calc_wilcox_by_uORF_status <- function(LFC=uORFandGene_level_LFCfromDESeq2) {
+  no_uORF_TE <- filter(LFC, simpleTrans_cat != "TE_indFilt" & has_uORF==F) 
+  w_uORF_TE <- filter(LFC, simpleTrans_cat != "TE_indFilt" & has_uORF==T)
+  CPN_wilcox <- wilcox.test(no_uORF_TE$TE_CPN, w_uORF_TE$TE_CPN)
+  SCPN_wilcox <- wilcox.test(no_uORF_TE$TE_SCPN, w_uORF_TE$TE_SCPN)
+  out <- list(CPN_wilcox=CPN_wilcox, SCPN_wilcox=SCPN_wilcox)
+  
+}
+
+wilcox_tests_has_uORF_or_not <- calc_wilcox_by_uORF_status()
+
+TE_CPN_by_uORF_status_plot <- ggplot(filter(uORFandGene_level_LFCfromDESeq2, simpleTrans_cat != "TE_indFilt"), aes(x=TE_CPN, color=has_uORF))+stat_ecdf()+JF_theme+xlim(-3,3)+ylab("cumulative_fraction")+geom_hline(yintercept=0.5, linetype="dashed")+geom_vline(xintercept = 0, linetype="dashed")+ggtitle(paste("p < ", signif(wilcox_tests_has_uORF_or_not$CPN_wilcox$p.value,3), sep=""))
+TE_SCPN_by_uORF_status_plot <- ggplot(filter(uORFandGene_level_LFCfromDESeq2, simpleTrans_cat != "TE_indFilt"), aes(x=TE_SCPN, color=has_uORF))+stat_ecdf()+JF_theme+xlim(-3,3)+ylab("cumulative_fraction")+geom_hline(yintercept=0.5, linetype="dashed")+geom_vline(xintercept = 0, linetype="dashed")+ggtitle(paste("p < ", signif(wilcox_tests_has_uORF_or_not$SCPN_wilcox$p.value,3), sep=""))
+uORF_status_TE_plot <- TE_CPN_by_uORF_status_plot | TE_SCPN_by_uORF_status_plot 
+uORF_status_TE_plot
+
+TE_by_uORF_status_summary <- uORFandGene_level_LFCfromDESeq2 %>%
+  filter(simpleTrans_cat != "TE_indFilt") %>%
+  mutate(rawTE_CPN=2^TE_CPN, rawTE_SCPN=2^TE_SCPN) %>%
+  group_by(has_uORF) %>%
+  summarize(mean_TE_CPN=mean(rawTE_CPN), mean_TE_SCPN=mean(rawTE_SCPN)) %>%
+    mutate(mean_TE_CPN=log2(mean_TE_CPN), mean_TE_SCPN=log2(mean_TE_SCPN))
+
+
+uORF_volcano_plot <- ggplot(filter(uORFandGene_level_LFCfromDESeq2, is.na(uORF_RP_padj)== F & simpleTrans_cat != "TE_indFilt"), aes(x=lFC_uORF_RP, y=-log10(uORF_RP_padj), color=uORF_category))+geom_point(size=0.5, alpha=0.8)+JF_theme+scale_color_manual(values=c("red","blue","grey"))+geom_hline(yintercept=-log10(sig), linetype="dashed")
+uORF_volcano_plot 
+
+geneRP_vs_uORF_RP <- ggplot(filter(uORFandGene_level_LFCfromDESeq2, has_uORF==T & simpleTrans_cat != "TE_indFilt"), aes(x=lFC_uORF_RP,y=lFC_RP))+geom_point(size=0.5, alpha=0.8)+JF_theme+xlim(-6,6)+ylim(-6,6)+geom_hline(yintercept=0, linetype="dashed")+geom_vline(xintercept = 0, linetype="dashed")
+geneRP_vs_uORF_RP 
+
+geneTE_vs_uORF_RP <- ggplot(filter(uORFandGene_level_LFCfromDESeq2, has_uORF==T & simpleTrans_cat != "TE_indFilt"), aes(x=lFC_uORF_RP,y=lFC_TE, color=simpleTrans_cat))+geom_point(size=0.5, alpha=0.8)+JF_theme+xlim(-6,6)+ylim(-6,6)+geom_hline(yintercept=0, linetype="dashed")+geom_vline(xintercept = 0, linetype="dashed")+scale_color_manual(values=c("purple","purple4","gray","red","blue"))
+geneTE_vs_uORF_RP 
+
+
+uORF_RP_vs_geneAF <- ggplot(filter(uORFandGene_level_LFCfromDESeq2, has_uORF==T &  simpleTrans_cat != "TE_indFilt"), aes(x=lFC_AF,y=lFC_uORF_RP))+geom_point()+JF_theme+xlim(-6,6)+ylim(-6,6)
+uORF_RP_vs_geneAF 
+
+comboPlot_w_uORFcats <- ggplot(filter(uORFandGene_level_LFCfromDESeq2, has_uORF==T & simpleTrans_cat != "TE_indFilt"), aes(x=lFC_AF,y=lFC_RP, color=uORF_category))+scale_color_manual(values=c("red","blue","gray","black"))+geom_point(size=0.3, alpha=0.7, shape=19)+JF_theme+xlim(-6,6)+ylim(-6,6)+geom_hline(yintercept=0,linetype="dashed")+geom_vline(xintercept=0,linetype="dashed")
+
+comboPlot_w_uORFcats
+
+
+```
+###Run DESeq2 on the uORFs. But: try to do the same differential translation as interaction term analysis as for mRNAs
+###Use uORF counts as "RP" sample counts, and AF (across whole mRNA) counts as "AF" counts to calculate a TE
+```{r uORF_DESeq2_wAF}
+
+well_transcribed <- filter(LFC_fromDESeq, simpleTrans_cat !="TE_indFilt") %>% dplyr::select(Geneid)
+ORF_counts_tidy <- read.table("ORFcounts/ORF_counts.tidy.txt", header=T, stringsAsFactors = T)
+ORF_counts_tidy_res <- merge(ORF_counts_tidy, res_collapsed, by="ORF_ID")
+uORF_counts_tidy_smol <- ORF_counts_tidy_res %>%
+  mutate(samps=Sample, Counts=as.numeric(Counts), samps=factor(samps)) %>%
+  dplyr::select(ORF_ID, gene_id, Counts, samps, ORF_type, gene_name, ORF_tstart, ORF_tstop) %>%
+  filter(ORF_type=="uORF" | ORF_type=="Overlap_uORF") %>%
+  mutate(Geneid=gene_id)
+  
+
+uORF_counts_tidy_smol <- merge(uORF_counts_tidy_smol, experimentTypes, by="samps")
+##filter uORF counts for well-transcribed genes 
+##(ie, genes where significance of diff TE can be defined)
+##(and only take counts from the RP experiments)
+uORF_counts_tidy_smol <- uORF_counts_tidy_smol %>%
+  dplyr::select(samps, ORF_ID, Geneid, exp, subtype, Counts) %>%
+  mutate(RP_Counts=Counts) %>%
+  filter(samps %in% experimentTypes_sampFilt$samps) %>%
+  filter(exp=="RP") %>%
+  filter(Geneid %in% well_transcribed$Geneid)
+
+###Take counts from AF samples in well transcribed genes
+AF_tidy_counts <- featureCounts_tidy_sampFilt %>%
+  filter(exp=="AF") %>%
+  filter(Geneid %in% uORF_counts_tidy_smol$Geneid) %>%
+  dplyr::select(samps, Geneid, exp, counts, subtype) %>%
+  mutate(AF_Counts=counts) %>%
+  filter(Geneid %in% well_transcribed$Geneid)
+
+###Combine gene names with ORF_IDs, such that for all genes with uORFs,
+##The AF for that particular gene is paired with the ORF_ID for the uORF
+uORF_Geneids_ORF_IDs <- uORF_counts_tidy_smol %>%
+  dplyr::select(Geneid, ORF_ID) %>%
+  group_by(Geneid, ORF_ID) %>%
+  summarize()
+AF_tidy_counts <- merge(uORF_Geneids_ORF_IDs, AF_tidy_counts,  by="Geneid")
+
+###Combine together AF count and uORF count data, using ORF_IDs as identifiers.
+###Build DESeq2 count matrix, run full model wit exp:subtype interaction term.
+AF_counts_tidy_smol <- data.frame(samps=AF_tidy_counts$samps, ORF_ID=AF_tidy_counts$ORF_ID, Counts=AF_tidy_counts$AF_Counts)
+uORF_counts_tidy_very_smol <- data.frame(samps=uORF_counts_tidy_smol$samps, ORF_ID=uORF_counts_tidy_smol$ORF_ID, Counts=uORF_counts_tidy_smol$RP_Counts)
+uORFandAF_counts_tidy <- rbind(AF_counts_tidy_smol, uORF_counts_tidy_very_smol)
+#make sure the samp ordering matches the ordering in colData for DESeq2
+uORFandAF_counts_tidy$samps <- factor(uORFandAF_counts_tidy$samps, levels=rownames(colData))
+
+uORF_AF_counts_matrix <- uORFandAF_counts_tidy %>%
+  filter(samps %in% experimentTypes_sampFilt$samps) %>%
+  dplyr::select(samps, ORF_ID, Counts) %>%
+  spread(samps,Counts)
+rownames(uORF_AF_counts_matrix) <- uORF_AF_counts_matrix$ORF_ID
+uORF_AF_counts_matrix <- uORF_AF_counts_matrix %>% dplyr::select(-ORF_ID)
+
+dds_AF_uORF <- DESeqDataSetFromMatrix(countData = uORF_AF_counts_matrix, colData = colData, design=~exp+subtype+subtype:exp)
+dds_AF_uORF$exp <- factor(dds_AF_uORF$exp, levels=c("AF","RP"))
+dds_AF_uORF$subtype <- factor(dds_AF_uORF$subtype, levels=c("CPN","SCPN"))
+dds_AF_uORF <- DESeq(dds_AF_uORF)
+res_AF_uORF <- results(dds_AF_uORF, alpha=sig)
+
+res_AF_uORF_df <- data.frame(ORF_ID=rownames(res_AF_uORF), uORF_TE_LFC=res_AF_uORF$log2FoldChange, uORF_TE_padj=res_AF_uORF$padj)
+res_AF_uORF_df <- merge(res_AF_uORF_df, uORF_Geneids_ORF_IDs, by="ORF_ID")
+res_AF_uORF_df <- res_AF_uORF_df %>%
+  filter(is.na(uORF_TE_padj) ==F)
+
+#merge with LFCfrom_DESeq
+uORFandGene_TE_LFCfromDESeq2 <- merge(res_AF_uORF_df, LFC_fromDESeq, by="Geneid")
+uORFandGene_TE_LFCfromDESeq2 <- uORFandGene_TE_LFCfromDESeq2%>%
+  mutate(uORF_category=case_when(
+    uORF_TE_padj < sig & uORF_TE_LFC < 0 ~ "uORF_TE_lower",
+    uORF_TE_padj < sig & uORF_TE_LFC > 0 ~ "uORF_TE_higher",
+    uORF_TE_padj > sig ~ "uORF_not_sig"
+  ))
+uORF_TEvsGene_TE_table <- data.frame(table(uORFandGene_TE_LFCfromDESeq2$uORF_category,uORFandGene_TE_LFCfromDESeq2$simpleTrans_cat ))
+uORF_TEvsGene_TE_table_uORF_sig <- 
+  data.frame(uORF_category=uORF_TEvsGene_TE_table$Var1, simpleTrans_cat=uORF_TEvsGene_TE_table$Var2,NumberOfGenes=uORF_TEvsGene_TE_table$Freq ) %>% filter(uORF_category != "uORF_not_sig") %>%
+  arrange(uORF_category)
+
+reciprocal_TE_changes <- uORFandGene_TE_LFCfromDESeq2 %>%
+  filter(uORF_TE_padj < sig & simpleTrans_cat != "no_change")
+
+TE_vs_uORF_TE_lm <- lm(uORFandGene_TE_LFCfromDESeq2$lFC_TE ~ uORFandGene_TE_LFCfromDESeq2$uORF_TE_LFC)
+TE_vs_uORF_TE_corr <- signif(TE_vs_uORF_TE_lm$coefficients[[2]],3)
+
+lFC_TEvsuORF_lFC_TE_uORFcolored_plot <- ggplot(uORFandGene_TE_LFCfromDESeq2, aes(x=uORF_TE_LFC, y=lFC_TE, color=uORF_category))+geom_point(size=0.8, alpha=0.75)+JF_theme+geom_hline(yintercept=0, linetype="dashed")+geom_vline(xintercept=0, linetype="dashed")+scale_color_manual(values=c("grey","red","blue"))
+lFC_TEvsuORF_lFC_TE_uORFcolored_plot
+
+lFC_TEvsuORF_lFC_TE_uORFtransCat_plot <- ggplot(uORFandGene_TE_LFCfromDESeq2, aes(x=uORF_TE_LFC, y=lFC_TE, color=simpleTrans_cat))+geom_point(size=0.8, alpha=0.75)+JF_theme+geom_hline(yintercept=0, linetype="dashed")+geom_vline(xintercept=0, linetype="dashed")+scale_color_manual(values=c("purple","purple4","gray","red","blue"))
+lFC_TEvsuORF_lFC_TE_uORFtransCat_plot
+
+lFC_TEvsuORF_lFC_TE_plot_wLM <- ggplot(uORFandGene_TE_LFCfromDESeq2, aes(x=uORF_TE_LFC, y=lFC_TE))+geom_point(size=0.8, alpha=0.75)+JF_theme+geom_hline(yintercept=0, linetype="dashed")+geom_vline(xintercept=0, linetype="dashed")+geom_smooth(method="lm",aes(x=uORF_TE_LFC, y=lFC_TE), se=F, linetype="dashed")+ggtitle(paste("r^2=",TE_vs_uORF_TE_corr, sep=""))
+lFC_TEvsuORF_lFC_TE_plot_wLM
+
+
+###Plot the reciprocal changes. Need modified function to extract geneCounts from uORFs
+
+getuORFOfInterestCounts <- function(gene="ENSMUSG00000022044_66344373_66354380_21", dds=dds_AF_uORF, uORFandGene_TE_LFCfromDESeq=uORFandGene_TE_LFCfromDESeq2) {
+Gene_Names=filter(uORFandGene_TE_LFCfromDESeq2, ORF_ID==gene) %>% dplyr::select(Gene_Names)
+expData <- plotCounts(dds=dds, gene=gene, intgroup="exp", returnData = T)
+subtypeData <- plotCounts(dds=dds, gene=gene, intgroup="subtype", returnData = T)
+countData <- data.frame(Sample=rownames(expData), count=expData$count, exp=expData$exp, subtype=subtypeData$subtype, ORF_ID=gene,Gene_Names=Gene_Names$Gene_Names)
+# mutate(Gene_Names=mapIds(org.Mm.eg.db,
+#                      keys=as.character(Geneid),
+#                      column="SYMBOL",
+#                      keytype="ENSEMBL",
+#                      multiVals="first"))
+}
+
+test <- getuORFOfInterestCounts()
+
+#Higher uORF_TE and diff TE Gene
+
+uORFHigherGenediffTE_uORF_genes <- filter(reciprocal_TE_changes, uORF_category=="uORF_TE_higher" & (simpleTrans_cat=="TE_higher" | simpleTrans_cat=="TE_lower")) %>% mutate(Geneid=as.character(Geneid)) %>% dplyr::select(Geneid)
+uORFHigherGenediffTE_uORF_genes_counts <- bind_rows(lapply(uORFHigherGenediffTE_uORF_genes$Geneid,getGeneOfInterestCounts, dds=dds_full))
+uORFHigherGenediffTE_uORF_genes_plot <- plotGeneOfInterestCounts(uORFHigherGenediffTE_uORF_genes_counts)
+uORFHigherGenediffTE_uORF_genes_TE_plot <- plotGeneOfInterestCounts_TE_linear(uORFHigherGenediffTE_uORF_genes_counts)
+
+ORFHigherGenediffTE_uORFs<- filter(reciprocal_TE_changes, uORF_category=="uORF_TE_higher" & (simpleTrans_cat=="TE_higher" | simpleTrans_cat=="TE_lower")) %>% mutate(ORF_ID=as.character(ORF_ID)) %>% dplyr::select(ORF_ID)
+uORFHigherGenediffTE_uORF_counts <- bind_rows(lapply(ORFHigherGenediffTE_uORFs$ORF_ID,getuORFOfInterestCounts, dds=dds_AF_uORF))
+uORFHigherGenediffTE_uORF_plot <- plotGeneOfInterestCounts(uORFHigherGenediffTE_uORF_counts)
+uORFHigherGenediffTE_uORF_TE_plot <- plotGeneOfInterestCounts_TE_linear(uORFHigherGenediffTE_uORF_counts)
+
+uORFHigherGenediffTE_FC_plot <- uORFHigherGenediffTE_uORF_genes_plot | uORFHigherGenediffTE_uORF_plot 
+uORFHigherGenediffTE_TE_plot <- uORFHigherGenediffTE_uORF_genes_TE_plot | uORFHigherGenediffTE_uORF_TE_plot
+
+#Lower uORF_TE and diff TE
+
+uORFLowerGenediffTE_uORF_genes <- filter(reciprocal_TE_changes, uORF_category=="uORF_TE_lower" & (simpleTrans_cat=="TE_lower" | simpleTrans_cat=="TE_higher")) %>% mutate(Geneid=as.character(Geneid)) %>% dplyr::select(Geneid)
+uORFLowerGenediffTE_uORF_genes_counts <- bind_rows(lapply(uORFLowerGenediffTE_uORF_genes$Geneid,getGeneOfInterestCounts, dds=dds_full))
+uORFLowerGenediffTE_uORF_genes_plot <- plotGeneOfInterestCounts(uORFLowerGenediffTE_uORF_genes_counts)
+uORFLowerGenediffTE_uORF_genes_TE_plot <- plotGeneOfInterestCounts_TE_linear(uORFLowerGenediffTE_uORF_genes_counts)
+
+ORFLowerGenediffTE_uORFs<- filter(reciprocal_TE_changes, uORF_category=="uORF_TE_lower" & (simpleTrans_cat=="TE_lower" | simpleTrans_cat=="TE_higher")) %>% mutate(ORF_ID=as.character(ORF_ID)) %>% dplyr::select(ORF_ID)
+uORFLowerGenediffTE_uORF_counts <- bind_rows(lapply(ORFLowerGenediffTE_uORFs$ORF_ID,getuORFOfInterestCounts, dds=dds_AF_uORF))
+uORFLowerGenediffTE_uORF_plot <- plotGeneOfInterestCounts(uORFLowerGenediffTE_uORF_counts)
+uORFLowerGenediffTE_uORF_TE_plot <- plotGeneOfInterestCounts_TE_linear(uORFLowerGenediffTE_uORF_counts)
+
+uORFLowerGenediffTE_FC_plot <- uORFLowerGenediffTE_uORF_genes_plot | uORFLowerGenediffTE_uORF_plot 
+uORFLowerGenediffTE_TE_plot <- uORFLowerGenediffTE_uORF_genes_TE_plot | uORFLowerGenediffTE_uORF_TE_plot
+
+##The six genes with truly reciprocal TE changes
+reciprocal_TE_genes <- filter(reciprocal_TE_changes, (uORF_category=="uORF_TE_lower" & simpleTrans_cat=="TE_higher") | (uORF_category=="uORF_TE_higher" & simpleTrans_cat=="TE_lower"))  %>% mutate(Geneid=as.character(Geneid)) %>% dplyr::select(Geneid)
+reciprocal_TE_genes_counts <- bind_rows(lapply(reciprocal_TE_genes$Geneid,getGeneOfInterestCounts, dds=dds_full))
+reciprocal_genes_plot <- plotGeneOfInterestCounts(reciprocal_TE_genes_counts)
+reciprocal_TE_genes_TE_plot <- plotGeneOfInterestCounts_TE_linear(reciprocal_TE_genes_counts)
+
+reciprocal_TE_uORFs<- filter(reciprocal_TE_changes, (uORF_category=="uORF_TE_lower" & simpleTrans_cat=="TE_higher") | (uORF_category=="uORF_TE_higher" & simpleTrans_cat=="TE_lower") ) %>% mutate(ORF_ID=as.character(ORF_ID)) %>% dplyr::select(ORF_ID)
+reciprocal_uORF_counts <- bind_rows(lapply(reciprocal_TE_uORFs$ORF_ID,getuORFOfInterestCounts, dds=dds_AF_uORF))
+reciprocal_TE_uORF_plot <- plotGeneOfInterestCounts(reciprocal_uORF_counts)
+reciprocal_TE_uORF_TE_plot <- plotGeneOfInterestCounts_TE_linear(reciprocal_uORF_counts)
+
+reciprocal_TE_FC_plot <- reciprocal_genes_plot | reciprocal_TE_uORF_plot 
+reciprocal_TE_TE_plot <- reciprocal_TE_genes_TE_plot | reciprocal_TE_uORF_TE_plot 
+
+#Put the gene counts and uORF_counts for reciprocal genes together for one facet plot
+reciprocal_TE_genes_counts <- data.frame(reciprocal_TE_genes_counts, analysis="CDS") %>% dplyr::select(-Geneid)
+reciprocal_uORF_counts <- data.frame(reciprocal_uORF_counts, analysis="uORF") %>% dplyr::select(-ORF_ID)
+reciprocal_counts <- rbind(reciprocal_TE_genes_counts, reciprocal_uORF_counts)
+
+reciprocal_counts_TE_facet_plot <- ggplot(reciprocal_counts, aes(x=exp, y=count, color=subtype))+facet_wrap(~analysis+Gene_Names, scales="free_y", nrow=2)+JF_theme+geom_point(alpha=0.5)+geom_smooth(method="lm", aes(x=as.numeric(exp),y=count),se=F)+scale_color_manual(values=c("orange","blue"))
+reciprocal_counts_TE_facet_plot 
+
+```
+
+
+
+
+###A function for plotting the Psite_sums for a gene_name and ORF_type (ex: Atf4, Cux1, Nrxn1 uORFs) in a given res
+```{r plotPsiteSums}
+psiteSumsForPlotting <- function(res, gene, ORF) {
+  res_filt <- res %>%
+    filter(gene_name == gene & ORF_type == ORF ) %>%
+    mutate(dist_to_CDS = as.numeric(ORF_tstart) - as.numeric(levels(annotated_tstart)[annotated_tstart])) %>%
+     mutate(tx_ID=transcript_id) %>%
+    dplyr::select(gene_name, ORF_type, ORF_tstart, Psites_sum_frame0, Psites_sum_frame1, Psites_sum_frame2, ORF_length, annotated_tstart, tx_ID, dist_to_CDS) %>%
+    gather(key="Frame", value="Counts",-gene_name,-ORF_type, -ORF_tstart,-ORF_length,-annotated_tstart,-tx_ID,-dist_to_CDS) %>%
+    mutate(Frame=replace(Frame, Frame== "Psites_sum_frame0", 0)) %>%
+    mutate(Frame=replace(Frame, Frame== "Psites_sum_frame1", 1)) %>%
+    mutate(Frame=replace(Frame, Frame== "Psites_sum_frame2", 2))
+  
+psiteSumsPlot <- ggplot(res_filt, aes(x=dist_to_CDS,y=Counts, fill=Frame))+geom_col()+ggtitle(paste(gene, ORF, sep=" "))+facet_wrap(~tx_ID)+theme(legend.position = "none")
+}
+
+#test <- psiteSumsForPlotting(res_collapsed,"Nrxn1","uORF")
+
+Cux1_oORF_psiteSumsPlot <- psiteSumsForPlotting(res_collapsed,"Cux1","Overlap_uORF")+JF_theme
+Cux1_oORF_psiteSumsPlot
+#
+Nrxn1_uORF_psiteSumsPlot <- psiteSumsForPlotting(res_collapsed,"Nrxn1","uORF")+JF_theme
+Nrxn1_uORF_psiteSumsPlot
+
+Atf4_uORF_psiteSumsPlot <- psiteSumsForPlotting(res_collapsed,"Atf4","Overlap_uORF")+JF_theme
+Atf4_uORF_psiteSumsPlot
+```
+
+###Run topGo analysis on the uORFs, Overlap_ORFs vs annotated ORFs
+```{r topGo}
+#pull out all anotated genes, remove non_uniq gene names (if needed)
+allORFs <- res_collapsed %>%
+  filter(ORF_type=="annotated") %>%
+  dplyr::select(gene_name)
+allORFs <- unique(allORFs)
+
+#pull out the genes with a uORF or oORF. Count the number of occurances of each gene
+#Divide 0.01 by the number of occurances to create a "pseudo pval".
+#This way 1) all genes with a uORF have a pval < 0.01, to be selected by topDiffGenes 2) pseudo-pvals
+#are ordered by the # of uORFs
+
+##Update: psuedo-pval not needed! Can simply define a list of interesting genes (in this case, genes with uORFs)
+uORF_genes <- res_collapsed %>%
+  filter(ORF_type=="uORF" | ORF_type == "Overlap_uORF") %>%
+  dplyr::select(gene_name) %>%
+  group_by(gene_name) %>%
+  summarize(uORF_Count=n()) %>%
+  mutate(pseudo_pval=0.01/uORF_Count, interesting=T)
+
+#assign pseudo_pval=1 to genes not in uORF_genes
+non_uORF_genes <- filter(allORFs, !(gene_name %in% uORF_genes$gene_name)) %>%
+  mutate(uORF_Count=0,pseudo_pval=1, interesting=F)
+
+#combine all the genes together to make geneList, a vector of psuedo_pvals with names corresponding to gene_names
+allGenes <- rbind(uORF_genes, non_uORF_genes)
+geneList <- as.vector(allGenes$pseudo_pval)
+names(geneList) <- allGenes$gene_name
+
+topDiffGenes <- function(allScore) {
+return(allScore <= 0.01)
+}
+
+
+MM_gene <- annFUN.org("BP", mapping = "org.Mm.eg.db", ID = "alias")
+MM_gene2GO <- inverseList(MM_gene)
+
+
+allGeneNames <- allGenes$gene_name
+uORF_geneList<- factor(as.integer(allGeneNames %in% uORF_genes$gene_name ))
+names(uORF_geneList) <- allGeneNames
+
+uORF_GOdata <- new("topGOdata", ontology = "BP", allGenes = uORF_geneList,
+ annot = annFUN.gene2GO, gene2GO = MM_gene2GO, nodeSize=5 )
+
+weight01.fisher.uORF <- runTest(uORF_GOdata, statistic = "fisher")
+weight01.fisher.uORF
+
+weight01.fisher.Res.uORF <- GenTable(uORF_GOdata, weight01.fisher.uORF, topNodes = 10)
+weight01.fisher.Res.uORF <- dplyr::rename(weight01.fisher.Res.uORF, has_uORF = Significant)
+weight01.fisher.Res.uORF <- dplyr::rename(weight01.fisher.Res.uORF, pval = result1)
+weight01.fisher.Res.uORF$pval <- as.numeric(weight01.fisher.Res.uORF$pval)
+weight01.fisher.Res.uORF <- weight01.fisher.Res.uORF %>%
+  mutate(GO_Term=paste(GO.ID, Term, sep=" "))
+weight01.fisher.Res.uORF$Term <- fct_reorder(weight01.fisher.Res.uORF$Term, weight01.fisher.Res.uORF$pval, .desc=T)
+#   gather(key="gene_category", value="gene_number", -GO.ID, -Term, -GO_Term, -pval) %>%
+#   mutate(nlog10p=-log10(pval))
+
+weight01.fisher.uORF_GOplot <- ggplot(weight01.fisher.Res.uORF, aes(y=Term, x=-log10(pval)))+geom_colh()+JF_theme+ylab("")
+weight01.fisher.uORF_GOplot
+
+elim.fisher.uORF <- runTest(uORF_GOdata, method="elim", statistic = "fisher")
+elim.fisher.uORF
+elim.fisher.Res.uORF <- GenTable(uORF_GOdata, elim.fisher.uORF, topNodes = 10)
+#Get identical results as the "psuedo-pval method". Will prefer the predefined list method over the psuedo-pval method. 
+
+#Print genes in certain GO categories 
+allGO <- genesInTerm(uORF_GOdata)
+sg <- sigGenes(uORF_GOdata)
+
+test_GOgenes <- intersect(allGO[["GO:0021766"]],sg)
+```
+
+###Plot the figures using patchwork. Save a big space to put in the Nrxn1 orf_density plots
+```{r uORF_patchwork}
+layout="
+AAAA##
+BBCCCC
+#DDDD#
+"
+
+uORF_patch <- ORF_type_plot + (ORF_length_ecdf_plot) + ORF_startByType_plot  +  weight01.fisher.uORF_GOplot + Nrxn1_uORF_psiteSumsPlot+plot_layout(design=layout, heights=c(1,1,1,3))+theme(text=element_text("ArialMT")) + plot_annotation(tag_levels = list(c("A","B","C","D"))) & theme(plot.tag=element_text(size=12, face="bold"))
+
+pdfName=paste(outDir, "uORF_fig.pdf", sep="/")
+pdf(file=pdfName, width=6.5, height=5.7)
+plot(uORF_patch)
+dev.off()
+
+```
+
+###Assemble plots into a "QC_fig" (showing region coverage, length distros, P-site heatmaps
+###and frequency and "Counts_fig" (showing TPM_distro, #of genes above threshold, sample
+###perason correlation and clustering). The QC_fig starts at Panel C because A and B are
+###Gel images and browser shots to be added in Illustrator. 
+
+```{r patchwork}
+QC_patch <- (plot_spacer() | plot_spacer()) / (rpkm_byRegion_plot | CDS_riboProf) / allAnno_RiboProf_bySample / (psite_freqHeat | psiteFreq)+theme(text=element_text("ArialMT")) + plot_annotation(tag_levels = list(c("C","D","E","F","G"))) & theme(plot.tag=element_text(size=12, face="bold"))
+
+pdfName=paste(outDir, "QC_fig.pdf", sep="/")
+pdf(file=pdfName, width=6.5, height=9)
+plot(QC_patch)
+dev.off()
+
+Counts_patch <- (TPMdensity | rawDensity) / (aboveTPM10_plot | aboveRaw10_plot) / (as.ggplot(TPM_cor_pheatmap_simple)) +
+  theme(text=element_text("ArialMT")) + plot_annotation(tag_levels = list(c("A","B","C","D","E"))) & theme(plot.tag=element_text(size=12, face="bold"))
+
+pdfName=paste(outDir, "Counts_fig.pdf", sep="/")
+pdf(file=pdfName, width=6.5, height=9)
+plot(Counts_patch)
+dev.off()
+
+QC_patch
+Counts_patch
+uORF_patch
+```
+

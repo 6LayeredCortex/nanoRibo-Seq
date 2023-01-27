@@ -1,0 +1,63 @@
+samples:
+  - JF134_S1
+  - JF135_S2
+  - JF136_S3
+  - JF137_S4
+  - JF138_S5
+  - JF139_S6
+  - JF140_S7
+  - JF141_S8
+  - JF142_S9
+  - JF143_S10
+  - JF144_S11
+  - JF145_S12
+  - JF146_S13
+  - JF147_S14
+  - JF148_S15
+  - JF149_S16
+
+star2rRNA: 
+  flags: "--runMode alignReads --runThreadN 8 --outSAMtype BAM Unsorted --readFilesCommand gunzip -c --outReadsUnmapped Fastx"
+  flags2: "--outSAMmultNmax 1 --outFilterScoreMinOverLread 0 --outFilterMatchNminOverLread 0 --outFilterMatchNmin 21"
+  modules: "STAR/2.6.0c-fasrc01"
+  reference: "/n/macklis_lab/users/jfroberg/mtrDmm10/STARv2.6.0c-fasrc01_rRNA_idx"
+
+star2mm10:
+   flags: "--runMode alignReads --runThreadN 8 --outSAMtype BAM SortedByCoordinate --readFilesCommand gunzip -c --outSAMmultNmax 1"
+   flags2: "--outFilterScoreMinOverLread 0 --outFilterMatchNminOverLread 0 --outFilterMatchNmin 21"
+   STARmod: "STAR/2.6.0c-fasrc01"
+   samMod: "samtools/1.5-fasrc02"
+   reference: "/n/macklis_lab/users/jfroberg/mtrDmm10/GRCm38_M22_star_idx"
+   
+featureCounts:
+   modules: "subread/1.5.1-fasrc01"
+   gtf: "/n/macklis_lab/users/jfroberg/gtfs/Mus_musculus.GRCm38.95_chrNamed_headFix.gtf"
+
+star2transcriptome:
+   flags: "--runMode alignReads --runThreadN 8 --outSAMtype BAM SortedByCoordinate --readFilesCommand gunzip -c --outSAMmultNmax 1"
+   flags2: "--quantMode TranscriptomeSAM --outFilterScoreMinOverLread 0 --outFilterMatchNminOverLread 0 --outFilterMatchNmin 21"
+   STARmod: "STAR/2.6.0c-fasrc01"
+   samMod: "samtools/1.5-fasrc02"
+   gtf: "/n/macklis_lab/users/jfroberg/gtfs/Mus_musculus.GRCm38.95_chrNamed_headFix.gtf"
+   reference: "/n/macklis_lab/users/jfroberg/mtrDmm10/GRCm38_M22_star_idx"
+   
+lengthDistros:
+    modules: "subread/1.5.1-fasrc01 samtools/1.5-fasrc02"
+    gtf: "/n/macklis_lab/users/jfroberg/gtfs/Mus_musculus.GRCm38.95_chrNamed_headFix.gtf"
+    script: "nanoRibo-Seq/CPN_SCPN_comparison/makeLengthDistros_v2.sh"
+
+RiboCode:
+    metadata: "experimentTypesFull_SubFall2021.csv"
+    modules: "Anaconda/5.0.1-fasrc02"
+    shell_script: "nanoRibo-Seq/CPN_SCPN_comparison/separateRPbams.sh"
+    annot_gtf: "/n/macklis_lab/users/jfroberg/gtfs/mm10_RiboCode_gtfs/RiboCode_annot.gtf"
+    list_script: "nanoRibo-Seq/CPN_SCPN_comparison/bamFileList_script.sh"   
+    comboScript: "nanoRibo-Seq/CPN_SCPN_comparison/combineORFcounts.sh"
+
+Rmd:
+   metadata: "experimentTypesFull_SubFall2021.csv"
+   modules: "Pandoc/2.5 R/3.5.1-fasrc01"
+   Rscript: "nanoRibo-Seq/CPN_SCPN_comparison/compile_v3.R"
+   Rmd: "nanoRibo-Seq/CPN_SCPN_comparison/LengthsCountsCov_RiboWaltz_v6.Rmd"
+   R_LIBS: "/n/home12/jfroberg/R_LIBS/R_LIBS_v3.5.1"
+   gtf: "/n/macklis_lab/users/jfroberg/gtfs/Mus_musculus.GRCm38.95_chrNamed_headFix.gtf"

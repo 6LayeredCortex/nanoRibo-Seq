@@ -1,0 +1,724 @@
+---
+author: "John E Froberg"
+date: Sys.Date()
+title: "CountsPlotting"
+output: html_document
+---
+
+```{r setup}
+knitr::opts_chunk$set(echo=FALSE, message=FALSE)
+
+
+# #variables that are normally passed in from the Snakemake run:
+# experimentTypeFile="experimentTypesFull.csv"
+# lengthCountsFile="dedup_lengthDistroTidy.txt"
+# CDS="dedupBams/featureCounts_CDS_summary.txt"
+# three_utr="dedupBams/featureCounts_three_prime_utr_summary.txt"
+# five_utr="dedupBams/featureCounts_five_prime_utr_summary.txt"
+# gtf="Mus_musculus.GRCm38.95_chrNamed_headFix.gtf"
+# qs="dedup_RPbams"
+# outDir="test"
+
+JF_theme <- theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black"), plot.title = element_text(size = 7, face = "bold"),legend.title=element_text(size=7), legend.text=element_text(size=7), axis.text = element_text(size=7), axis.title.x = element_text(size=7),axis.title.y=element_text(size=7))
+```
+
+
+###Load in the metadata from the experiment types file. 
+###Compute "descriptive names" by dropping the subtype,  "samps", and "date" fields and pasting together.
+###Save descriptiveNames as Upper Case "Samples" in experimentTypes.
+```{r loadMetadata, echo=FALSE}
+experimentTypes=read.csv(experimentTypeFile)
+ descriptiveNames <- experimentTypes %>%
+  unite(col="descriptiveNames", -subtype, -samps, -date, sep=".")
+ descriptiveNames <- dplyr::select(descriptiveNames, samps, descriptiveNames)
+ experimentTypes$Samples <- descriptiveNames$descriptiveNames
+ experimentTypes
+```
+
+###Convert length counts to relative frequencies, add in the metadata
+```{r countsToFreqwMeta}
+lengthCounts <- read.csv(lengthCountsFile)
+totalCounts <- lengthCounts %>%
+  group_by(samps,anno) %>%
+  summarize(sum=sum(count))
+
+lengthDistro <- merge(lengthCounts, totalCounts, by=c("samps", "anno"))
+lengthDistro <- lengthDistro %>%
+  mutate(freq=count/sum)
+
+#metadata <- read.csv("metadata.csv")
+lengthDistro <- merge(lengthDistro, experimentTypes, by="samps")
+
+```
+###Find the length with max freq for all samples
+```{r maxFreq}
+maxFreq <- lengthDistro %>%
+  group_by(samps, anno) %>%
+  summarize(max=max(freq))
+
+max <- merge(maxFreq, lengthDistro, by=c("samps","anno"))
+maxLengthDistro <- filter(max, freq==max)
+maxLengthCDS_RPs <- filter(maxLengthDistro, exp=="RP" & anno=="CDS")
+```
+
+
+###Plot Freq vs length for the CDS with various groupings of the samples
+```{r freqPlotting}
+CDS_riboProf <- ggplot(filter(lengthDistro, exp=="RP",anno=="CDS"), aes(x=length, y=freq, color=Samples))+geom_line(size=1)+JF_theme+xlim(20,40)+xlab("length (nt)")+theme(axis.title.x = element_text(vjust=0))
+
+CDS_riboProf_byDate <- ggplot(filter(lengthDistro, exp=="RP",anno=="CDS"), aes(x=length, y=freq, color=Samples))+geom_line(size=1)+facet_wrap(~date)+xlim(20,40)+JF_theme
+
+CDS_riboProf_byDate_noxlim <- ggplot(filter(lengthDistro, exp=="RP",anno=="CDS"), aes(x=length, y=freq, color=descriptiveNames))+geom_line(size=1)+facet_wrap(~date)+ylim(0,0.5)+JF_theme
+
+if ( "AF" %in% levels(lengthDistro$exp) ) {
+CDS_AF_byDate <-ggplot(filter(lengthDistro, exp=="AF",anno=="CDS"), aes(x=length, y=freq, color=Samples))+geom_line(size=1)+facet_wrap(~date)+ylim(0,0.5)+JF_theme
+CDS_AF_byDate
+}
+
+
+allAnno_RiboProf_bySample <- ggplot(filter(lengthDistro, exp=="RP", anno %in% c("CDS","three_prime_utr","snoRNA")), aes(x=length, y=freq, color=anno))+geom_line(size=1)+facet_wrap(~Samples, nrow=ceiling(nlevels(factor(lengthDistro$Samples))/6))+xlim(20,40)+JF_theme+xlab("length (nt)")
+
+CDS_riboProf
+CDS_riboProf_byDate
+allAnno_RiboProf_bySample
+```
+
+
+
+###Load in the featureCounts. Use only CDS reads for RiboProf, 3'+5'UTR+CDS reads for AlkFrag libraries
+```{r loadFeatureCounts, echo=FALSE}
+loadFC <- function(experimentType, CDS, five_utr, three_utr) {
+sampNames=experimentType$samps
+CDS <- read.table(file=CDS, header= T, sep="\t", stringsAsFactors = F)
+Five_prime <- read.table(file=five_utr, header= T, sep="\t", stringsAsFactors = F)
+Three_prime <- read.table(file=three_utr, header= T, sep="\t", stringsAsFactors = F)
+filteredCDS <- CDS %>% 
+  filter(Geneid %in% Five_prime$Geneid & Geneid %in% Three_prime$Geneid)
+filtered5p <- Five_prime %>%
+  filter(Geneid %in% Five_prime$Geneid & Geneid %in% Three_prime$Geneid)
+filtered3p <- Three_prime %>%
+  filter(Geneid %in% Five_prime$Geneid & Geneid %in% Three_prime$Geneid)
+
+#move to new Rmd
+maxSampCol <- 6+length(sampNames)
+mRNA_counts <- filteredCDS[,7:maxSampCol]+filtered5p[,7:maxSampCol]+filtered3p[,7:maxSampCol]
+CDS_counts <- filteredCDS[,7:maxSampCol]
+#
+
+colnames(mRNA_counts) <- sampNames
+colnames(CDS_counts) <- sampNames
+mRNA_counts <- mRNA_counts %>%
+  mutate(Geneid=filteredCDS$Geneid, Length=filteredCDS$Length)
+CDS_counts <- CDS_counts %>%
+  mutate(Geneid=filteredCDS$Geneid, Length=filteredCDS$Length)
+mRNA_counts_tidy <- gather(mRNA_counts,"samps","counts", -Geneid, -Length)
+CDS_counts_tidy <- gather(CDS_counts,"samps","counts", -Geneid, -Length)
+mRNA_counts_tidy <- merge(mRNA_counts_tidy, experimentType, by="samps")
+CDS_counts_tidy <- merge(CDS_counts_tidy, experimentType, by="samps")
+
+raw_counts_tidy <- rbind(filter(mRNA_counts_tidy, exp=="AF"),filter(CDS_counts_tidy, exp=="RP"))
+}
+
+
+featureCounts_tidy <- loadFC(experimentTypes, CDS, five_utr, three_utr)
+total_mRNA_counts <- featureCounts_tidy %>%
+  group_by(Samples) %>%
+  summarize(mRNA_counts=sum(counts))
+total_mRNA_counts
+total_mRNA_counts_plot <- ggplot(total_mRNA_counts, aes(x=Samples, y=mRNA_counts, fill=Samples))+geom_bar(stat="identity", position="dodge")+JF_theme+theme(axis.text.x = element_text(angle = 45, hjust=1))+xlab("")+geom_hline(yintercept = 150000)
+total_mRNA_counts_plot
+```
+
+###Calculate the and plot reads per kilobase per million mapped (to mRNA) for the ribosome profiling experiments
+```{r regionCovCalc}
+#moveTo new Rmd
+loadFCw_regions <- function(experimentType, CDS, five_utr, three_utr) {
+sampNames=experimentType$samps
+#write.csv(file="test.txt", sampNames)
+CDS <- read.table(file=CDS, header= T, sep="\t", stringsAsFactors = F)
+Five_prime <- read.table(file=five_utr, header= T, sep="\t", stringsAsFactors = F)
+Three_prime <- read.table(file=three_utr, header= T, sep="\t", stringsAsFactors = F)
+filteredCDS <- CDS %>% 
+  filter(Geneid %in% Five_prime$Geneid & Geneid %in% Three_prime$Geneid)
+filtered5p <- Five_prime %>%
+  filter(Geneid %in% Five_prime$Geneid & Geneid %in% Three_prime$Geneid)
+filtered3p <- Three_prime %>%
+  filter(Geneid %in% Five_prime$Geneid & Geneid %in% Three_prime$Geneid)
+
+maxSampCol <- 6+length(sampNames)
+mRNA_counts <- filteredCDS[,7:maxSampCol]+filtered5p[,7:maxSampCol]+filtered3p[,7:maxSampCol]
+CDS_counts <- filteredCDS[,7:maxSampCol]
+FiveP_counts <- filtered5p[,7:maxSampCol]
+ThreeP_counts <- filtered3p[,7:maxSampCol]
+colnames(CDS_counts) <- sampNames
+colnames(FiveP_counts) <- sampNames
+colnames(ThreeP_counts) <- sampNames
+CDS_counts <- CDS_counts %>% mutate(Geneid=filteredCDS$Geneid, Length=filteredCDS$Length, region="CDS")
+FiveP_counts <-FiveP_counts %>% mutate(Geneid=filteredCDS$Geneid, Length=filtered5p$Length, region="5' UTR")
+ThreeP_counts <-ThreeP_counts %>% mutate(Geneid=filteredCDS$Geneid, Length=filtered3p$Length, region="3' UTR")
+
+All_counts <- rbind(CDS_counts, FiveP_counts, ThreeP_counts)
+All_counts_tidy <- gather(All_counts, "samps","counts", -Geneid, -Length, -region)
+All_counts_tidy <- merge(All_counts_tidy, experimentType, by="samps")
+
+rpk <- All_counts_tidy %>%
+  group_by(samps, region, exp) %>%
+  summarize(totCounts=sum(counts),totLength=sum(Length)) %>%
+  mutate(rpk=totCounts/(totLength/1000))
+
+million_mapped <- All_counts_tidy %>%
+  group_by(samps) %>%
+  summarize(mRNA_mapped_mil=sum(counts)/1e6)
+
+rpkm <- merge(rpk, million_mapped, by="samps") %>%
+  mutate(rpkm=rpk/mRNA_mapped_mil)
+#
+}
+
+rpkm_byRegion <- loadFCw_regions(experimentTypes, CDS, five_utr, three_utr)
+rpkm_byRegion$region <- factor(rpkm_byRegion$region, levels=c("5' UTR","CDS","3' UTR"))
+rpkm_byRegion <- merge(rpkm_byRegion, descriptiveNames, by="samps")
+write.csv(file="test134-185.txt", head(rpkm_byRegion) , quote=F, row.names=F)
+rpkm_byRegion <- rpkm_byRegion %>%
+  mutate(Samples=descriptiveNames)
+rpkm_byRegion_plot <- ggplot(filter(rpkm_byRegion, exp=="RP"), aes(y=rpkm,x=Samples, fill=region))+facet_wrap(~exp)+geom_bar(stat="identity", position="dodge")+JF_theme+theme(axis.text.x = element_text(angle = 45, hjust=1))+xlab("")
+rpkm_byRegion_plot
+#
+```
+
+
+###Calculate TPMs from the raw counts
+```{r calculateTPM, echo=FALSE}
+
+calcTPM <- function(RC_tidy) {
+  RC <- RC_tidy %>% 
+    dplyr::select(samps, Geneid, Length, counts) %>% #not robust to different types of metadata
+    spread("samps","counts")
+  Geneid=RC$Geneid
+  lengths=RC$Length
+  rawCounts = RC[,3:ncol(RC)] #rawCounts start with 7th column
+  
+  x <- rawCounts/lengths
+  tpm.mat <- t( t(x) * 1e6 / colSums(x) )
+  TPM_out <- data.frame(Geneid, tpm.mat)
+  colnames(TPM_out) <- c("Geneid",colnames(rawCounts))
+  TPM_out
+}
+TPMs <- calcTPM(featureCounts_tidy)
+```
+
+###Now plot the log10TPM+1 distributions
+```{r plotTPM_distros, echo=FALSE}
+
+tpmDensity <- function(TPMs,TPM_title="TPM_density") {
+  #takes in a tidy table of tpms and returns a density plot
+ JF_theme <- theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black"), plot.title = element_text(size = 7, face = "bold"),legend.title=element_text(size=7), legend.text=element_text(size=7), axis.text = element_text(size=7), axis.title.x = element_text(size=7),axis.title.y=element_text(size=7))
+  tpmPlot <- ggplot(TPMs,aes(log10TPM,fill=Samples ))+geom_histogram(alpha=0.3,position="identity",bins=100)+JF_theme+theme(legend.position = c(0.75,0.75))+ggtitle(TPM_title)
+}
+
+
+TPMs_tidy <- gather(TPMs, "samps","TPM",-Geneid)
+TPMs_tidy <- TPMs_tidy %>%
+  mutate(log10TPM=log10(TPM+1))
+TPMs_tidy <- merge(TPMs_tidy, descriptiveNames, by="samps")
+TPMs_tidy <- TPMs_tidy %>%
+  mutate(Samples=descriptiveNames)
+
+TPMdensity <- tpmDensity(TPMs_tidy)
+TPMdensity <- TPMdensity + ylab("# of genes")
+TPMdensity
+```
+
+###Plot the number of genes above TPM threshold=10 and threshold=20
+```{r aboveTPMthreshold, echo=FALSE}
+aboveTPM <- function(TPM_tidy, threshold=10) {
+  #take in a tpm table and a tpm threshold, 
+  tpm_frame <- data.frame(TPM_tidy, tpmFilter=TPM_tidy$TPM >= threshold)
+  tpm_frame <- group_by(tpm_frame, Samples)
+  tpm_aboveFilt <- summarize(tpm_frame, tpmFilter=sum(tpmFilter))
+}
+
+aboveTPM10 <- aboveTPM(TPMs_tidy, threshold=10)
+aboveTPM10_merged <- data.frame(merge(aboveTPM10, experimentTypes, by="Samples"))
+write.csv(file="test243.csv",aboveTPM10_merged, quote=F, row.names = F)
+aboveTPM20 <- aboveTPM(TPMs_tidy, threshold=20)
+aboveTPM20_merged <- merge(aboveTPM20, experimentTypes, by="Samples")
+
+
+aboveTPM10_plot <- ggplot(aboveTPM10_merged, aes(x=Samples, y=tpmFilter, fill=cells))+geom_col()+ggtitle("TPM above 10")+JF_theme+xlab("")+theme(legend.position = "none")+theme(axis.text.x = element_text(angle = 45, hjust=1))+ylab("# genes above threshold")+facet_wrap(~exp, scales="free_x")
+
+aboveTPM20_plot <- ggplot(aboveTPM20_merged, aes(x=Samples, y=tpmFilter, fill=cells))+geom_col()+ggtitle("TPM above 20")+JF_theme+theme(legend.position = "none")+theme(axis.text.x = element_text(angle = 45, hjust=1))+ylab("# genes above threshold")+xlab("")+facet_wrap(~exp, scales="free_x")
+
+aboveTPM10_plot
+aboveTPM20_plot
+```
+
+###Plot the distribtion of rawCounts in each sample:
+```{r plotRawDistros, echo=FALSE}
+rawDensity <- ggplot(featureCounts_tidy,aes(log10(counts+1),fill=Samples ))+geom_histogram(alpha=0.3,position="identity",bins=100)+JF_theme+theme(legend.position = c(0.75,0.75))+ggtitle("rawCounts_density")
+rawDensity
+```
+
+
+###Plot the number of genes in each sample above rawCounts=10, 20, 40
+```{r aboveRawThreshold, echo=FALSE}
+aboveRaw <- function(FC_tidy, threshold=10) {
+  #take in a featureCounts table and a raw threshold, 
+  raw_frame <- data.frame(FC_tidy, rawFilter=FC_tidy$counts >= threshold)
+  raw_frame <- group_by(raw_frame, exp, cells, Samples)
+  raw_aboveFilt <- summarize(raw_frame, rawFilter=sum(rawFilter))
+}
+
+aboveRaw10 <- aboveRaw(featureCounts_tidy, threshold=10)
+#aboveRaw10_merged <- merge(aboveRaw10, experimentTypes, by="Samples")
+aboveRaw20 <- aboveRaw(featureCounts_tidy, threshold=20)
+#aboveRaw20_merged <- merge(aboveRaw20, experimentTypes, by="Samples")
+aboveRaw40 <- aboveRaw(featureCounts_tidy, threshold=40)
+#aboveRaw40_merged <- merge(aboveRaw40, experimentTypes, by="Samples")
+#write.csv(file="test278.csv", aboveRaw10_merged)
+
+aboveRaw10_plot <- ggplot(aboveRaw10, aes(x=Samples, y=rawFilter, fill=cells))+geom_col()+ggtitle("Raw above 10")+JF_theme+theme(legend.position = "none")+theme(axis.text.x = element_text(angle = 45, hjust=1))+ylab("# genes above threshold")+xlab("")+facet_wrap(~exp, scales="free_x")
+aboveRaw20_plot <- ggplot(aboveRaw20, aes(x=Samples, y=rawFilter, fill=cells))+geom_col()+ggtitle("Raw above 20")+JF_theme+theme(legend.position = "none")+theme(axis.text.x = element_text(angle = 45, hjust=1))+ylab("# genes above threshold")+xlab("")+facet_wrap(~exp, scales="free_x")
+aboveRaw40_plot <- ggplot(aboveRaw40, aes(x=Samples, y=rawFilter, fill=cells))+geom_col()+ggtitle("Raw above 40")+JF_theme+theme(legend.position = "none")+theme(axis.text.x = element_text(angle = 45, hjust=1))+ylab("# genes above threshold")+xlab("")+facet_wrap(~exp, scales="free_x")
+
+aboveRaw10_plot
+aboveRaw20_plot
+aboveRaw40_plot
+```
+
+###Code to filter a TPM-table either for genes where 1) all samples above a TPM-based filter (filterTPMs)
+###Or 2) genes above a rawCount threshold (defult=10) in a given fraction of samples (default=1/4).
+```{r filter_functions}
+filterTPMs <- function(TPMs, threshold=10) {
+  TPMs_filt <- filter_if(TPMs, is.double, all_vars(. > threshold))
+}
+
+filterRaw <- function(FC_tidy, threshold=10, frac_samples=1/4, experimentTypes, TPMs) {
+  raw_frame <- data.frame(FC_tidy, rawFilter=FC_tidy$counts >= threshold)
+  #First, filter for all samples where a gene passed the raw filter. Then, count the number of instances
+  #Finally, filter for Genes where the number of samples exceeds the cutoff (where gene is above threshold in n/2-1 samples). Then filter the rows of the TPM matrix for gene IDs matching the genes passing the filter.
+  
+  filt_frame <- filter(raw_frame, rawFilter==TRUE)
+  filt_frame <- filt_frame %>%
+    group_by(Geneid) %>%
+    add_count(Geneid)
+  
+  # raw_frame <- group_by(raw_frame, Geneid) %>%
+  #   add_count(rawFilter)
+  sampNames=experimentTypes$samps
+  numSamps <- length(sampNames)
+  sampCutoff <- frac_samples * numSamps
+  GenesOverFilt <- filter(filt_frame, n >= sampCutoff)
+  TPMs_filt <- filter(TPMs, Geneid %in% GenesOverFilt$Geneid)
+}
+
+```
+
+###Calculate and plot Pearson's R correlation coefficient for all genes above a certain raw threshold (here, 20).
+###In a certain fraction of samples (here, 1/2 of samples)
+###Leave mRNA counts and date in the report, remove for the figure version for clarity.
+```{r TPMCorrelationHeatmap}
+TPMs_filtered <- filterRaw(FC_tidy=featureCounts_tidy,threshold=20, frac_samples=2/4, experimentTypes = experimentTypes, TPMs=TPMs)
+numGenesAboveThreshold <- dim(TPMs_filtered)[1]
+numGenesAboveThreshold
+
+cormat <- cor(dplyr::select((TPMs_filtered), -Geneid))
+experimentTypesPlus_mRNACounts <- merge(experimentTypes, total_mRNA_counts, by="Samples")
+anno <- dplyr::select(experimentTypesPlus_mRNACounts, -samps)
+rownames(anno) <- experimentTypesPlus_mRNACounts$samps
+TPM_cor_pheatmap <- pheatmap(cormat, display_numbers = T, color=colorRampPalette(brewer.pal(n=9, name="YlOrRd"))(100), annotation_col=dplyr::select(anno, -Samples), treeheight_row = 10, treeheight_col = 10, show_colnames = F, labels_col = anno$Samples, show_rownames = F, fontsize=7)
+TPM_cor_pheatmap
+
+anno <- dplyr::select(experimentTypesPlus_mRNACounts, -samps, -date, -mRNA_counts)
+rownames(anno) <- experimentTypesPlus_mRNACounts$samps
+TPM_cor_pheatmap_simple <- pheatmap(cormat, display_numbers = T, color=colorRampPalette(brewer.pal(n=9, name="YlOrRd"))(100), annotation_col=dplyr::select(anno, -Samples), treeheight_row = 10, treeheight_col = 10, show_colnames = F, labels_col = anno$Samples, show_rownames = F, fontsize=7)
+TPM_cor_pheatmap_simple
+
+```
+
+
+###Run RiboWaltz to evaluate 3-nt periodicity in the data sets. 
+###Requires a directory of transcriptome-aligned BamFiles and a gtf
+```{r bamToList, echo=FALSE}
+#Try loading in all the files and see how it goes. After a more careful
+#reading of the RiboWaltz vignette, it looks like it will process samples separately.
+
+#make a named vector mapping bamFile names (no path or extension needed) to descriptiveNames
+RP_samps <- filter(experimentTypes, exp=="RP")
+RP_descriptiveNames <- RP_samps$Samples
+names(RP_descriptiveNames) <- RP_samps$samps
+write.csv(file="test337.txt", RP_descriptiveNames)
+
+annotation_dt <- create_annotation(gtfpath = gtf, dataSource = "GRCm38.95",organism="Mus musculus")
+reads_list <- bamtolist(bamfolder = bamFiles, annotation = annotation_dt, transcript_align = FALSE, name_samples = RP_descriptiveNames) 
+```
+
+```{r lengthFilter, echo=FALSE}
+#From last run, need to set length_filter_mode="custom" for "bad" or
+#RNA-seq libraries to get scored. 
+filtered_list <- length_filter(data = reads_list, length_filter_mode = "custom", length_filter_vector = 27:33)
+```
+
+```{r psite, echo=FALSE}
+#perform p-site analysis for all samples, save data to a sub-folder of the transcriptome alignment.
+dir.create(outDir)
+psite_dir <- paste(outDir,'/psite', sep="")
+dir.create(psite_dir)
+psite <- psite(data=filtered_list, plot=T, plot_dir = psite_dir, plot_format = "pdf")
+```
+
+###Make plots that stratify by frame:
+####At first, I plotted using reads_list. This makes plots across all reads lengths
+####Plotting using the length-filtered reads (filtered_list) makes much nicer graphs.
+```{r stratify, echo=FALSE}
+reads_psite_list <- psite_info(filtered_list,psite)
+frames_stratified <- frame_psite_length(reads_psite_list, region="all",cl=90)
+strat_dir <- paste(outDir,"/frame_counts",sep="")
+dir.create(strat_dir)
+#setwd(strat_dir)
+pdfName <- paste(strat_dir, "Frame_counts_all_samples.pdf", sep="/" )
+frames_stratified$plot
+
+pdf(pdfName)
+frames_stratified$plot
+dev.off()
+
+#The plot looks squished if I try plotting all of them on the same plot. Try looping over the sampleNames and making individual plots for each one. Update: If I only include filtered reads, the graphs aren't too squished and are readable
+sampleNames=unique(psite$sample)
+for(sampleName in sampleNames) {
+  frame_stratified=frame_psite_length(reads_psite_list,  sample=sampleName, region="all",cl=90)
+  pdfName=paste(sampleName,".pdf",sep="")
+  pdf(file=pdfName)
+  plot(frame_stratified$plot)
+  dev.off()
+}
+```
+
+###P-site heatmaps (both directly from RiboWaltz, and by re-plotting the RiboWaltz data for a nicer-looking plot) for all samples in current set. 
+###Currently using scale factors as 1/CDS_reads:
+```{r psite_heatmap, echo=FALSE}
+heat_dir <- paste(outDir,"/heatmaps",sep="")
+dir.create(heat_dir)
+#setwd(heat_dir)
+
+#calculate scale factors as the inverse of CDS_counts
+scale_factors <- filter(featureCounts_tidy, exp=="RP") %>%
+  group_by(samps) %>%
+  summarize(CDS_reads=sum(counts)) %>%
+  mutate(scale_factors=1/CDS_reads) %>%
+  dplyr::select(scale_factors)
+scale_factors <- c(t(scale_factors))
+names(scale_factors) <- sampleNames
+
+#Build up the list of sample names
+sampNamesList <- list()
+for (sampName in sampleNames) {
+  sampNamesList[[sampName]] <- c(sampName)
+}
+
+psite_heatmap <- metaheatmap_psite(reads_psite_list, annotation=annotation_dt,log=F,utr5l=15, cdsl=30, utr3l=15, sample=sampNamesList, scale_factors=scale_factors)
+
+psite_heatmap$plot
+
+pdfName=paste(heat_dir, "psite_heatmap.pdf",sep="/")
+pdf(file=pdfName, width=11, height=8.5)
+plot(psite_heatmap$plot)
+dev.off()
+
+
+#Example plotting function that looks nicer than a heatmap:
+psite_signal_plot <- ggplot(psite_heatmap$dt, aes(x=distance,y=reads,color=sample))+geom_line()+JF_theme+facet_wrap(~reg)
+psite_signal_plot
+
+psite_dt <- psite_heatmap$dt
+psite_dt$reg <- plyr::revalue(psite_dt$reg, c("Distance from start (nt)"="from start (nt):","Distance from stop (nt)"="from stop (nt):"))
+
+psite_signal_heat <- ggplot(psite_dt, aes(x=distance,fill=reads,y=sample))+geom_tile()+facet_wrap(~reg)+scale_fill_gradient(low="white", high="black")+JF_theme+xlab("distance from start or stop (nt)")+ylab("")+xlab("")
+psite_signal_heat
+
+#look at how scaling is done. Try row normalization of raw read counts to compute frequencies within the regions of interest
+
+psite_heatmap_raw <- metaheatmap_psite(reads_psite_list, annotation=annotation_dt,log=F,utr5l=15, cdsl=30, utr3l=15, sample=sampNamesList)
+psite_dt_raw <- psite_heatmap_raw$dt
+psite_dt_raw$reg <- plyr::revalue(psite_dt_raw$reg, c("Distance from start (nt)"="from start (nt):","Distance from stop (nt)"="from stop (nt):"))
+
+psite_region_sums <- psite_dt_raw %>%
+  group_by(sample, reg) %>%
+  summarize(region_sum=sum(reads))
+psite_dt_raw <- merge(psite_dt_raw, psite_region_sums, by=c("sample","reg"))
+psite_dt_raw <- psite_dt_raw %>%
+  mutate(freq=reads/region_sum)
+
+psite_freqHeat <- ggplot(psite_dt_raw, aes(x=distance,fill=freq,y=sample))+geom_tile()+facet_wrap(~reg)+scale_fill_gradient(low="white", high="black")+JF_theme+xlab("distance from start or stop (nt)")+ylab("")+xlab("")+theme(legend.position="bottom")
+psite_freqHeat 
+
+pdfName=paste(heat_dir, "psite_freq_heatmap.pdf",sep="/")
+pdf(file=pdfName, width=11, height=8.5)
+plot(psite_freqHeat)
+dev.off()
+
+```
+
+###Next, calculate the percent of P-sites within each reading frame for each sample.
+```{r framePsite, echo=FALSE}
+frame_dir <- paste(outDir,"/frame_psite_percentage",sep="")
+dir.create(frame_dir)
+#setwd(frame_dir)
+
+frame_psites <- frame_psite(reads_psite_list, region="all")
+
+frame_psites$plot
+
+pdfName <- paste(frame_dir, "Frame_percentages_all_samples.pdf", sep="/")
+pdf(pdfName)
+plot(frame_psites$plot)
+dev.off()
+
+sampleNames=unique(psite$sample)
+for(sampleName in sampleNames) {
+  aFramePsite=frame_psite(reads_psite_list, sample=sampleName, region="all")
+  pdfName=paste(sampleName,".pdf",sep="")
+  pdf(file=pdfName)
+  plot(aFramePsite$plot)
+  dev.off()
+}
+```
+
+###And make P-site frequency plots for comparison across samples:
+```{r psitePlotting, echo=FALSE}
+plotFramePsites <- function(samples, frame_psites, sampNames=samples) {
+  #function to take in a list of samples, and frame_psites Ribowaltz object    #Plots the percentage of reads over CDSs in each frame, grouped by samples.
+  FPs <- frame_psites$dt
+  FPsToPlot <- filter(FPs, sample %in% samples & region == "CDS" )
+  FPplot <- ggplot(data=FPsToPlot, aes(x=sample,y=percentage,fill=as.factor(frame)))
+  FPplot <- FPplot+geom_bar(stat="identity", position=position_dodge())+theme_minimal(base_size=18)+scale_fill_discrete(name="frame")+ylim(0,100)+scale_x_discrete(labels=sampNames)+JF_theme
+  FPplot <- FPplot+theme(axis.text.x = element_text(angle = 45, hjust=1))+xlab("")+ylab("%P-sites in each frame")
+                           
+}
+
+#setwd(frame_dir)
+psiteFreq<- plotFramePsites(sampleNames,frame_psites)
+pdfName=paste(frame_dir, "psite_freq.pdf",sep="/")
+pdf(file=pdfName, width=11, height=8.5)
+plot(psiteFreq)
+dev.off()
+
+psiteFreq
+
+```
+
+###Read in the collapsed results from RiboCode, pull out all, novel, uORFs, and dORFs
+```{r read_data}
+res_collapsed <- read.table(file=RiboCodeFile,sep="\t", header=T)
+res_collapsed <- mutate(res_collapsed, start_codon=toupper(start_codon))
+res_collapsed$ORF_type <- factor(res_collapsed$ORF_type, levels=c("uORF","Overlap_uORF","annotated","internal","novel","dORF","Overlap_dORF"))
+uORF_res <- filter(res_collapsed, ORF_type=="uORF" | ORF_type=="Overlap_uORF")
+dORF_res <- filter(res_collapsed, ORF_type=="dORF" | ORF_type=="Overlap_dORF")
+novel_res <- filter(res_collapsed, ORF_type=="novel")
+internal_res <- filter(res_collapsed, ORF_type=="internal")
+```
+
+###plot the number of each ORF_type for all ORFs, ATG, and nonATG ORFs, and the lengths of all ORFs
+```{r plot_numbers}
+plotORF_counts <- function(res, title="") {
+ORF_type <- res %>%
+  group_by(ORF_type) %>%
+  count(ORF_type)
+
+ORF_type_plot <- ggplot(ORF_type, aes(x=ORF_type, y=n, fill=ORF_type))+geom_col()+JF_theme+ylab("No. of ORFs")+geom_text(aes(label=n))+ggtitle(title)+theme(axis.text.x = element_text(angle = 45, hjust=1))+theme(legend.position = "none")+xlab("")
+}
+
+ORF_type_plot <- plotORF_counts(res=res_collapsed, "All start_codons")
+ORF_type_plot 
+
+ATG_res <- filter(res_collapsed, start_codon=="ATG")
+ATG_type_plot <- plotORF_counts(ATG_res,"start=ATG")
+ATG_type_plot
+
+nonATG_res <- filter(res_collapsed, start_codon!="ATG")
+nonATG_type_plot <- plotORF_counts(nonATG_res,"start=NTG")
+nonATG_type_plot
+
+ORF_length_plot <- ggplot(res_collapsed, aes(x=ORF_length, fill=ORF_type, color=ORF_type, after_stat(count)))+geom_density(alpha=0.5, position="stack")+JF_theme+scale_x_continuous(trans = 'log10', breaks=c(10,20,50,100,200,500,1000,2000,5000,10000,200000,50000,100000))
+ORF_length_plot
+ORF_length_ecdf_plot <- ggplot(res_collapsed, aes(x=ORF_length, color=ORF_type))+stat_ecdf()+JF_theme+scale_x_continuous(trans = 'log10',breaks=c(10,50,100,500,1000,5000,10000))+ylab("cumlative_fraction")+scale_x_log10(limits = c(10,1e4))+xlab("ORF_length (nt)")+theme(legend.position="top")
+ORF_length_ecdf_plot
+```
+###Plot the distribution of start codons for the difference ORF_types, and the gene types for novel ORFs
+```{r startCodon_distro}
+ORF_typeAndstart <- res_collapsed %>% 
+  group_by(ORF_type, start_codon) %>%
+  summarize(count=n()) %>%
+  mutate(frac =count/sum(count))
+
+ORF_startByType_plot <- ggplot(ORF_typeAndstart, aes(x=ORF_type,y=frac, fill=start_codon))+geom_col(position="stack")+JF_theme+ylab("%start each start")+xlab("")+theme(axis.text.x = element_text(angle = 45, hjust=1))+theme(legend.position="top")
+ORF_startByType_plot
+```
+###Write out the transcriptIDs for all d- and u- ORFs. Also write out all ORFs as a background, and novel internal ORFs. Plot the gene_types for novel ORFs
+```{r write_TxIDs}
+writeORFtypeTxIDs <- function(res, ORF="annotated", name="ORF_txIDs.txt") {
+  TxIDs <- filter(res, ORF_type==ORF) %>%
+    dplyr::select(transcript_id)
+  write.table(TxIDs,file=name,quote=F, row.names=F, col.names=F)
+}
+write.table(res_collapsed$transcript_id, file="All_ORF_txIDs.txt", quote=F,row.names=F, col.names=F)
+
+writeORFtypeTxIDs(res_collapsed,ORF="uORF",name=paste(outDir, "uORF_txIDs.txt", sep="/"))
+writeORFtypeTxIDs(res_collapsed,ORF="Overlap_uORF",name=paste(outDir, "Overlap_uORF_txIDs.txt", sep="/"))
+writeORFtypeTxIDs(res_collapsed,ORF="dORF",name=paste(outDir, "dORF_txIDs.txt", sep="/"))
+writeORFtypeTxIDs(res_collapsed,ORF="Overlap_dORF",name=paste(outDir, "Overlap_dORF_txIDs.txt", sep="/"))
+writeORFtypeTxIDs(res_collapsed,ORF="novel",name=paste(outDir, "novel_ORF_txIDs.txt", sep="/"))
+writeORFtypeTxIDs(res_collapsed,ORF="internal",name=paste(outDir, "internal_ORF_txIDs.txt", sep="/"))
+
+novel_gene_type <- novel_res %>%
+  group_by(gene_type) %>%
+  summarize(count=n())
+novel_gene_type_plot <- ggplot(novel_gene_type, aes(x=gene_type, y=count, fill=gene_type))+geom_col()+JF_theme+ylab("Number of ORFs")+theme(axis.text.x=element_text( angle = 45, hjust=1))
+novel_gene_type_plot
+```
+
+###A function for plotting the Psite_sums for a gene_name and ORF_type (ex: Atf4, Cux1, Nrxn1 uORFs) in a given res
+```{r plotPsiteSums}
+psiteSumsForPlotting <- function(res, gene, ORF) {
+  res_filt <- res %>%
+    filter(gene_name == gene & ORF_type == ORF ) %>%
+    mutate(dist_to_CDS = as.numeric(ORF_tstart) - as.numeric(levels(annotated_tstart)[annotated_tstart])) %>%
+     mutate(tx_ID=transcript_id) %>%
+    dplyr::select(gene_name, ORF_type, ORF_tstart, Psites_sum_frame0, Psites_sum_frame1, Psites_sum_frame2, ORF_length, annotated_tstart, tx_ID, dist_to_CDS) %>%
+    gather(key="Frame", value="Counts",-gene_name,-ORF_type, -ORF_tstart,-ORF_length,-annotated_tstart,-tx_ID,-dist_to_CDS) %>%
+    mutate(Frame=replace(Frame, Frame== "Psites_sum_frame0", 0)) %>%
+    mutate(Frame=replace(Frame, Frame== "Psites_sum_frame1", 1)) %>%
+    mutate(Frame=replace(Frame, Frame== "Psites_sum_frame2", 2))
+  
+psiteSumsPlot <- ggplot(res_filt, aes(x=dist_to_CDS,y=Counts, fill=Frame))+geom_col()+ggtitle(paste(gene, ORF, sep=" "))+facet_wrap(~tx_ID)+theme(legend.position = "none")
+}
+
+#test <- psiteSumsForPlotting(res_collapsed,"Nrxn1","uORF")
+
+Cux1_oORF_psiteSumsPlot <- psiteSumsForPlotting(res_collapsed,"Cux1","Overlap_uORF")+JF_theme
+Cux1_oORF_psiteSumsPlot
+#
+Nrxn1_uORF_psiteSumsPlot <- psiteSumsForPlotting(res_collapsed,"Nrxn1","uORF")+JF_theme
+Nrxn1_uORF_psiteSumsPlot
+
+Atf4_uORF_psiteSumsPlot <- psiteSumsForPlotting(res_collapsed,"Atf4","Overlap_uORF")+JF_theme
+Atf4_uORF_psiteSumsPlot
+```
+
+###Run topGo analysis on the uORFs, Overlap_ORFs vs annotated ORFs
+```{r topGo}
+#pull out all anotated genes, remove non_uniq gene names (if needed)
+allORFs <- res_collapsed %>%
+  filter(ORF_type=="annotated") %>%
+  dplyr::select(gene_name)
+allORFs <- unique(allORFs)
+
+#pull out the genes with a uORF or oORF. Count the number of occurances of each gene
+#Divide 0.01 by the number of occurances to create a "pseudo pval".
+#This way 1) all genes with a uORF have a pval < 0.01, to be selected by topDiffGenes 2) pseudo-pvals
+#are ordered by the # of uORFs
+
+##Update: psuedo-pval not needed! Can simply define a list of interesting genes (in this case, genes with uORFs)
+uORF_genes <- res_collapsed %>%
+  filter(ORF_type=="uORF" | ORF_type == "Overlap_uORF") %>%
+  dplyr::select(gene_name) %>%
+  group_by(gene_name) %>%
+  summarize(uORF_Count=n()) %>%
+  mutate(pseudo_pval=0.01/uORF_Count, interesting=T)
+
+#assign pseudo_pval=1 to genes not in uORF_genes
+non_uORF_genes <- filter(allORFs, !(gene_name %in% uORF_genes$gene_name)) %>%
+  mutate(uORF_Count=0,pseudo_pval=1, interesting=F)
+
+#combine all the genes together to make geneList, a vector of psuedo_pvals with names corresponding to gene_names
+allGenes <- rbind(uORF_genes, non_uORF_genes)
+geneList <- as.vector(allGenes$pseudo_pval)
+names(geneList) <- allGenes$gene_name
+
+topDiffGenes <- function(allScore) {
+return(allScore <= 0.01)
+}
+
+
+MM_gene <- annFUN.org("BP", mapping = "org.Mm.eg.db", ID = "alias")
+MM_gene2GO <- inverseList(MM_gene)
+
+
+allGeneNames <- allGenes$gene_name
+uORF_geneList<- factor(as.integer(allGeneNames %in% uORF_genes$gene_name ))
+names(uORF_geneList) <- allGeneNames
+
+uORF_GOdata <- new("topGOdata", ontology = "BP", allGenes = uORF_geneList,
+ annot = annFUN.gene2GO, gene2GO = MM_gene2GO, nodeSize=5 )
+
+weight01.fisher.uORF <- runTest(uORF_GOdata, statistic = "fisher")
+weight01.fisher.uORF
+
+weight01.fisher.Res.uORF <- GenTable(uORF_GOdata, weight01.fisher.uORF, topNodes = 10)
+weight01.fisher.Res.uORF <- dplyr::rename(weight01.fisher.Res.uORF, has_uORF = Significant)
+weight01.fisher.Res.uORF <- dplyr::rename(weight01.fisher.Res.uORF, pval = result1)
+weight01.fisher.Res.uORF$pval <- as.numeric(weight01.fisher.Res.uORF$pval)
+weight01.fisher.Res.uORF <- weight01.fisher.Res.uORF %>%
+  mutate(GO_Term=paste(GO.ID, Term, sep=" "))
+weight01.fisher.Res.uORF$Term <- fct_reorder(weight01.fisher.Res.uORF$Term, weight01.fisher.Res.uORF$pval, .desc=T)
+#   gather(key="gene_category", value="gene_number", -GO.ID, -Term, -GO_Term, -pval) %>%
+#   mutate(nlog10p=-log10(pval))
+
+weight01.fisher.uORF_GOplot <- ggplot(weight01.fisher.Res.uORF, aes(y=Term, x=-log10(pval)))+geom_colh()+JF_theme+ylab("")
+weight01.fisher.uORF_GOplot
+
+elim.fisher.uORF <- runTest(uORF_GOdata, method="elim", statistic = "fisher")
+elim.fisher.uORF
+elim.fisher.Res.uORF <- GenTable(uORF_GOdata, elim.fisher.uORF, topNodes = 10)
+#Get identical results as the "psuedo-pval method". Will prefer the predefined list method over the psuedo-pval method. 
+
+#Print genes in certain GO categories 
+allGO <- genesInTerm(uORF_GOdata)
+sg <- sigGenes(uORF_GOdata)
+
+test_GOgenes <- intersect(allGO[["GO:0021766"]],sg)
+```
+
+###Plot the figures using patchwork. Save a big space to put in the Nrxn1 orf_density plots
+```{r uORF_patchwork}
+layout="
+AAAA##
+BBCCCC
+#DDDD#
+"
+
+uORF_patch <- ORF_type_plot + (ORF_length_ecdf_plot) + ORF_startByType_plot  +  weight01.fisher.uORF_GOplot + Nrxn1_uORF_psiteSumsPlot+plot_layout(design=layout, heights=c(1,1,1,3))+theme(text=element_text("ArialMT")) + plot_annotation(tag_levels = list(c("A","B","C","D"))) & theme(plot.tag=element_text(size=12, face="bold"))
+
+pdfName=paste(outDir, "uORF_fig.pdf", sep="/")
+pdf(file=pdfName, width=6.5, height=5.7)
+plot(uORF_patch)
+dev.off()
+
+```
+
+###Assemble plots into a "QC_fig" (showing region coverage, length distros, P-site heatmaps
+###and frequency and "Counts_fig" (showing TPM_distro, #of genes above threshold, sample
+###perason correlation and clustering). The QC_fig starts at Panel C because A and B are
+###Gel images and browser shots to be added in Illustrator. 
+
+```{r patchwork}
+QC_patch <- (plot_spacer() | plot_spacer()) / (rpkm_byRegion_plot | CDS_riboProf) / allAnno_RiboProf_bySample / (psite_freqHeat | psiteFreq)+theme(text=element_text("ArialMT")) + plot_annotation(tag_levels = list(c("C","D","E","F","G"))) & theme(plot.tag=element_text(size=12, face="bold"))
+
+pdfName=paste(outDir, "QC_fig.pdf", sep="/")
+pdf(file=pdfName, width=6.5, height=9)
+plot(QC_patch)
+dev.off()
+
+Counts_patch <- (TPMdensity | rawDensity) / (aboveTPM10_plot | aboveRaw10_plot) / (as.ggplot(TPM_cor_pheatmap_simple)) +
+  theme(text=element_text("ArialMT")) + plot_annotation(tag_levels = list(c("A","B","C","D","E"))) & theme(plot.tag=element_text(size=12, face="bold"))
+
+pdfName=paste(outDir, "Counts_fig.pdf", sep="/")
+pdf(file=pdfName, width=6.5, height=9)
+plot(Counts_patch)
+dev.off()
+
+QC_patch
+Counts_patch
+uORF_patch
+```
+
