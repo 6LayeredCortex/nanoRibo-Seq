@@ -1,0 +1,47 @@
+###########
+#author: John E. Froberg
+#Copyright: 1/27/2023
+#Takes bamFiles in the directory above the current directory
+#Determines novel ORFs supported by the combination of all data sets using RiboCode (note the special gtfs needed) 
+##########
+
+configfile: "config.yaml"
+
+rule all:
+	input:
+		expand(["{bamPath}/{sample}.Aligned.toTranscriptome.out.sorted.dedup.bam"], sample=config["samples"], bamPath=config["bamPath"]),
+		"bamMap_file_fromPipeline.txt",
+		"RiboCode_ORFs_out.txt",
+		"dedup_RPbams",
+
+
+#run RiboCode to detect ORFs. Run using a GTF already annotated for RiboCode
+#Last lines (copying the output of RiboCode to a new file) are a trick to force
+#the output of RiboCode into a Snakemake output variable:
+rule RiboCode:
+	input:
+		bams=expand(["{bamPath}/{sample}.Aligned.toTranscriptome.out.sorted.dedup.bam"], sample=config["samples"], bamPath=config["bamPath"]),
+	output:
+		bamMap="bamMap_file_fromPipeline.txt",
+		RiboCodeOut="RiboCode_ORFs_out.txt",
+		dedup_RPbams=directory("dedup_RPbams"),
+	params:
+		metadata=config["RiboCode"]["metadata"],
+		modules=config["RiboCode"]["modules"],
+		shell_script=config["RiboCode"]["shell_script"],
+		dedup_bams="dedupBams",
+		dedup_suffix="Aligned.toTranscriptome.out.sorted.dedup.bam",
+		annot_gtf=config["RiboCode"]["annot_gtf"],
+	shell:
+		"""module load {params.modules};
+		mkdir {params.dedup_bams};
+		cp {input.bams} {params.dedup_bams};
+		{params.shell_script} {params.metadata} {params.dedup_bams} {params.dedup_suffix} {output.dedup_RPbams} cpBams.sh;
+		ls {output.dedup_RPbams}/*.bam > {output.bamMap};
+		source activate RiboCode;
+		metaplots -m 27 -M 36 -a {params.annot_gtf} -i {output.bamMap};
+		RiboCode -a {params.annot_gtf} -c metaplots_pre_config.txt -A CTG,GTG,TTG -l yes -b --min-AA-length 7 -p 0.05 -o "RiboCode_ORFs"
+		cp "RiboCode_ORFs_collapsed.txt" {output.RiboCodeOut}
+		"""
+
+

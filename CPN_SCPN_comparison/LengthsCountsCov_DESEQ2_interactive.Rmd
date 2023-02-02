@@ -34,7 +34,7 @@ lengthCountsFile="dedup_lengthDistroTidy.txt"
 CDS="dedupBams/featureCounts_CDS_summary.txt"
 three_utr="dedupBams/featureCounts_three_prime_utr_summary.txt"
 five_utr="dedupBams/featureCounts_five_prime_utr_summary.txt"
-gtf="Mus_musculus.GRCm38.95_chrNamed_headFix.gtf"
+gtf="/n/macklis_lab/users/jfroberg/gtfs/Mus_musculus.GRCm38.95_chrNamed_headFix.gtf"
 bamFiles="dedup_RPbams"
 outDir="interactivePlots"
 dir.create(outDir)
@@ -42,6 +42,23 @@ RiboCodeFile="RiboCode_ORFs_out.txt"
 
 
 JF_theme <- theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black"), plot.title = element_text(size = 7, face = "bold"),legend.title=element_text(size=7), legend.text=element_text(size=7), axis.text = element_text(size=7), axis.title.x = element_text(size=7),axis.title.y=element_text(size=7))
+```
+
+
+```{r getGeneNames_from_biomaRt}
+mouse_ensembl <- useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+mouse_gene_symbols <- getBM(attributes=c("ensembl_gene_id","external_gene_name"), mart=mouse_ensembl)
+mouse_gene_symbols_wGeneid <- mouse_gene_symbols %>% mutate(Geneid=ensembl_gene_id)
+ensmusg2ensmust <- getBM(attributes=c("ensembl_gene_id","external_gene_name", "ensembl_transcript_id"), mart=mouse_ensembl) %>% mutate(Geneid=ensembl_gene_id)
+
+ensembl_to_entrez <- org.Mm.egENSEMBL2EG %>%
+  as.data.frame()
+ensembl_to_allGO <- as.data.frame(org.Mm.egGO2ALLEGS) %>%
+  left_join(ensembl_to_entrez, by = "gene_id")
+
+
+# mouse_gene_symbols_resExp <- getBM(attributes=c("ensembl_gene_id","external_gene_name"), filters="ensembl_gene_id", values=resExp_df$Geneid, mart=mouse_ensembl)
+# mouse_gene_symbols_resExp$Geneid <- mouse_gene_symbols_resExp$ensembl_gene_id
 ```
 
 
@@ -467,7 +484,7 @@ RPF_MAplot <- ggplot(filter(res_RP_df, is.na(RP_sig)==F) , aes(y=log2FoldChange,
 TE_MAplot <- ggplot(filter(res_diffTE_df, is.na(diffTE_sig)==F) , aes(y=log2FoldChange,x=log10(baseMean), color=diffTE_sig))+JF_theme+geom_point(aes=0.5, size=0.2)+scale_color_manual(values=c("red","blue","grey"))+ylim(-6,6)+theme(legend.position = c(1, 0.8), legend.key.size = unit(0.5,"line"))
 
 subtypeComparison_res_df <- bind_rows(res_AF_df, res_RP_df, res_diffTE_df, res_TE_CPN_df, res_TE_SCPN_df) 
-
+subtypeComparison_res_df  <- subtypeComparison_res_df %>% left_join(mouse_gene_symbols_wGeneid, by="Geneid")
 RPvsAF_df <- subtypeComparison_res_df %>% filter(contrast %in% c("mRNA","RPF") & is.na(padj)==F) %>% dplyr::select(Geneid, log2FoldChange, contrast) %>% spread(key="contrast",value=log2FoldChange) %>% left_join(res_diffTE_df, by="Geneid") %>% dplyr::select(Geneid, mRNA, RPF, diffTE_sig)
 RPvsAF_scatterplot <- ggplot(RPvsAF_df, aes(x=mRNA,y=RPF))+JF_theme+geom_point(alpha=0.5, size=0.2)+geom_hline(yintercept=0)+geom_vline(xintercept=0)+xlab("mRNA log2FoldChange (SCPN/CPN)")+ylab("RPF log2FoldChange (SCPN/CPN)")+ggtitle(paste("Pearson's R=",round(cor(RPvsAF_df$mRNA,RPvsAF_df$RPF,method="pearson"),3)))+theme(legend.position = c(0.75, 0.75))
 RPvsAF_scatterplot 
@@ -515,6 +532,10 @@ CPN_TE_high <- (subtypeComparison_res_df %>% filter(TE_CPN_sig == "higher"))$Gen
 SCPN_TE_high <- (subtypeComparison_res_df %>% filter(TE_SCPN_sig == "higher"))$Geneid
 CPN_TE_low <- (subtypeComparison_res_df %>% filter(TE_CPN_sig == "lower"))$Geneid
 SCPN_TE_low <- (subtypeComparison_res_df %>% filter(TE_SCPN_sig == "lower"))$Geneid
+CPN_TE_notSig <- (subtypeComparison_res_df %>% filter(contrast=="TE_CPN" & (TE_CPN_sig %in% c("higher","lower"))==F))$Geneid
+SCPN_TE_notSig <- (subtypeComparison_res_df %>% filter(contrast=="TE_SCPN" & (TE_SCPN_sig %in% c("higher","lower"))==F))$Geneid
+
+
 SCPN_mRNA <- (subtypeComparison_res_df %>% filter(mRNA_sig == "higher"))$Geneid
 CPN_mRNA <- (subtypeComparison_res_df %>% filter(mRNA_sig == "lower"))$Geneid
 SCPN_RPF <- (subtypeComparison_res_df %>% filter(RP_sig == "higher"))$Geneid
@@ -597,5 +618,433 @@ plot(withinSubtypeTE)
 dev.off()
 
 ```
+```{r uORFs}
+CPN_ORFs_file="CPN_RiboCode/RiboCode_ORFs_collapsed.txt"
+SCPN_ORFs_file="SCPN_RiboCode/RiboCode_ORFs_collapsed.txt"
 
+CPN_ORFs_res_collapsed <- read.table(file=CPN_ORFs_file, sep="\t", header=T) %>% mutate(subtype="CPN")
+SCPN_ORFs_res_collapsed <- read.table(file=SCPN_ORFs_file, sep="\t", header=T) %>% mutate(subtype="SCPN")
+ORF_res <- bind_rows(CPN_ORFs_res_collapsed, SCPN_ORFs_res_collapsed)
+
+#label novel uORFs mapping to pseudogenes
+novelORF_in_pseudogene <- ORF_res$ORF_type=="novel" & (ORF_res$transcript_type %in% c("polymorphic_pseudogene","processed_pseudogene","pseudogene","transcribed_processed_pseudogene","transcribed_unitary_pseudogene","transcribed_unprocessed_pseudogene","translated_processed_pseudogene","unprocessed_pseudogene"))==T
+ORF_res[novelORF_in_pseudogene==T,]$ORF_type <- "pseudogene" 
+
+#plot the counts of ORF types by subtype
+ORF_type_counts <- ORF_res %>% group_by(subtype, ORF_type) %>% summarize(ORF_count=n())
+
+uORF_res <- filter(ORF_res, ORF_type=="uORF" | ORF_type=="Overlap_uORF")
+
+ORF_types_plot <- ggplot(ORF_type_counts, aes(x=ORF_type, y=ORF_count, fill=ORF_type, label=ORF_count))+JF_theme+geom_col()+geom_text()+facet_wrap(~subtype)+theme(axis.text.x = element_text(angle = 45, hjust=1))+theme(legend.position = "none")
+
+
+###Overlap between CPN and SCPN is a bit lower than I expected. Tried re-runing RiboCode with a more stringent pval (0.01 vs 0.05)
+###Still low. I wonder a bit if this might be because a decent % of uORFs are in genes that are differentially expressed between subtypes.
+
+uORF_ID_list <- list("CPN_uORF"=filter(ORF_res, ORF_type=="uORF" & subtype=="CPN")$ORF_ID,
+                     "CPN_Overlap_uORF"=filter(ORF_res, ORF_type=="Overlap_uORF" & subtype=="CPN")$ORF_ID,
+                     "SCPN_uORF"=filter(ORF_res, ORF_type=="uORF" & subtype=="SCPN")$ORF_ID,
+                     "SCPN_Overlap_uORF"=filter(ORF_res, ORF_type=="Overlap_uORF" & subtype=="SCPN")$ORF_ID)
+uORF_ID_upset <- upset(fromList(uORF_ID_list),order.by = "freq")
+uORF_ID_upset
+###Hypothesis wrong. Even among genes that are not diff exp, only about 33% of uORFs are shared. 
+uORF_ID_notdiffExp_list <- list("CPN_uORF"=filter(ORF_res, ORF_type=="uORF" & subtype=="CPN" & (gene_id %in% c(subtypeComp_GO_list$CPN_mRNA, subtypeComp_GO_list$SCPN_mRNA))==F)$ORF_ID,
+                     "CPN_Overlap_uORF"=filter(ORF_res, ORF_type=="Overlap_uORF" & subtype=="CPN" & (gene_id %in% c(subtypeComp_GO_list$CPN_mRNA, subtypeComp_GO_list$SCPN_mRNA))==F)$ORF_ID,
+                     "SCPN_uORF"=filter(ORF_res, ORF_type=="uORF" & subtype=="SCPN" & (gene_id %in% c(subtypeComp_GO_list$CPN_mRNA, subtypeComp_GO_list$SCPN_mRNA))==F)$ORF_ID,
+                     "SCPN_Overlap_uORF"=filter(ORF_res, ORF_type=="Overlap_uORF" & subtype=="SCPN" & (gene_id %in% c(subtypeComp_GO_list$CPN_mRNA, subtypeComp_GO_list$SCPN_mRNA))==F)$ORF_ID)
+uORF_ID_notdiffExp_upset <- upset(fromList(uORF_ID_notdiffExp_list),order.by = "freq")
+uORF_ID_notdiffExp_upset
+
+
+
+uORF_transcriptID_list <- list("CPN_uORF"=filter(ORF_res, ORF_type=="uORF" & subtype=="CPN")$transcript_id,
+                     "CPN_Overlap_uORF"=filter(ORF_res, ORF_type=="Overlap_uORF" & subtype=="CPN")$transcript_id,
+                     "SCPN_uORF"=filter(ORF_res, ORF_type=="uORF" & subtype=="SCPN")$transcript_id,
+                     "SCPN_Overlap_uORF"=filter(ORF_res, ORF_type=="Overlap_uORF" & subtype=="SCPN")$transcript_id)
+uORF_transcriptID_upset <- upset(fromList(uORF_transcriptID_list))
+uORF_transcriptID_upset
+
+uORF_geneID_list <- list("CPN_uORF"=filter(ORF_res, ORF_type=="uORF" & subtype=="CPN")$gene_id,
+                     "CPN_Overlap_uORF"=filter(ORF_res, ORF_type=="Overlap_uORF" & subtype=="CPN")$gene_id,
+                     "SCPN_uORF"=filter(ORF_res, ORF_type=="uORF" & subtype=="SCPN")$gene_id,
+                     "SCPN_Overlap_uORF"=filter(ORF_res, ORF_type=="Overlap_uORF" & subtype=="SCPN")$gene_id)
+uORF_geneID_upset <- upset(fromList(uORF_geneID_list))
+uORF_geneID_upset
+
+uORF_GO_list <- list("CPN_uORFs" = filter(ORF_res, (ORF_type=="uORF"| ORF_type=="Overlap_uORF" ) & subtype=="CPN")$gene_id,
+                     "SCPN_uORFs"= filter(ORF_res, (ORF_type=="uORF"| ORF_type=="Overlap_uORF" ) & subtype=="SCPN")$gene_id)
+uORF_ego_raw <- lapply(uORF_GO_list, run_enrichGO_raw_output)
+
+###See the strong enrichment for "synapse and structure" genes seen previously.
+uORF_ego_barplot <- lapply(uORF_ego_raw, barplot, showCategory=5,font.size=7, label_format=24)
+uORF_ego_barplot$CPN_uORFs <- uORF_ego_barplot$CPN_uORFs+theme(legend.position = "top")+ggtitle("top GO terms, CPN")+JF_theme
+uORF_ego_barplot$SCPN_uORFs <- uORF_ego_barplot$SCPN_uORFs+theme(legend.position = "top")+ggtitle("top GO terms uORFs, SCPN")+JF_theme
+
+
+
+subtypeComparison_res_df_plus_uORFs <- subtypeComparison_res_df %>%
+  mutate(uORF_status=case_when(
+    Geneid %in% filter(uORF_res, subtype=="CPN" & ORF_type=="uORF")$gene_id ~ "CPN_uORF",
+    Geneid %in% filter(uORF_res, subtype=="CPN" & ORF_type=="Overlap_uORF")$gene_id ~ "CPN_Overlap_uORF",
+    Geneid %in% filter(uORF_res, subtype=="SCPN" & ORF_type=="uORF")$gene_id ~ "SCPN_uORF",
+    Geneid %in% filter(uORF_res, subtype=="SCPN" & ORF_type=="Overlap_uORF")$gene_id ~ "SCPN_Overlap_uORF"
+  )) %>%
+  mutate(uORF_status_intersect=case_when(
+  (Geneid %in% filter(uORF_res, subtype=="CPN" & ORF_type=="uORF")$gene_id==T) & (Geneid %in% filter(uORF_res, subtype=="SCPN" & ORF_type=="uORF")$gene_id==F) ~ "CPN_uORF",
+  (Geneid %in% filter(uORF_res, subtype=="CPN" & ORF_type=="uORF")$gene_id==F) & (Geneid %in% filter(uORF_res, subtype=="SCPN" & ORF_type=="uORF")$gene_id==T) ~ "SCPN_uORF",
+  (Geneid %in% filter(uORF_res, subtype=="CPN" & ORF_type=="uORF")$gene_id==T) & (Geneid %in% filter(uORF_res, subtype=="SCPN" & ORF_type=="uORF")$gene_id==T) ~ "SCPN&CPN_uORF",
+  (Geneid %in% filter(uORF_res, subtype=="CPN" & ORF_type=="Overlap_uORF")$gene_id==T) & (Geneid %in% filter(uORF_res, subtype=="SCPN" & ORF_type=="Overlap_uORF")$gene_id==F) ~ "CPN_Overlap_uORF",
+  (Geneid %in% filter(uORF_res, subtype=="CPN" & ORF_type=="Overlap_uORF")$gene_id==F) & (Geneid %in% filter(uORF_res, subtype=="SCPN" & ORF_type=="Overlap_uORF")$gene_id==T) ~ "SCPN_Overlap_uORF",
+  (Geneid %in% filter(uORF_res, subtype=="CPN" & ORF_type=="Overlap_uORF")$gene_id==T) & (Geneid %in% filter(uORF_res, subtype=="SCPN" & ORF_type=="Overlap_uORF")$gene_id==T) ~ "SCPN&CPN_Overlap_uORF",
+))
+
+res_TE_CPN_df <- res_TE_CPN_df %>% mutate(uORF_status=case_when(
+  Geneid %in% filter(uORF_res, subtype=="CPN" & ORF_type=="uORF")$gene_id ~ "CPN_uORF",
+  Geneid %in% filter(uORF_res, subtype=="CPN" & ORF_type=="Overlap_uORF")$gene_id ~ "CPN_Overlap_uORF",
+  T ~ "no_uORF"
+)) %>% mutate(uORF_simple=case_when(
+  uORF_status != "no_uORF" ~ "uORF",
+  uORF_status == "no_uORF" ~ "no_uORF",
+))
+res_TE_SCPN_df <- res_TE_SCPN_df %>% mutate(uORF_status=case_when(
+  Geneid %in% filter(uORF_res, subtype=="SCPN" & ORF_type=="uORF")$gene_id ~ "SCPN_uORF",
+    Geneid %in% filter(uORF_res, subtype=="SCPN" & ORF_type=="Overlap_uORF")$gene_id ~ "SCPN_Overlap_uORF",
+  T ~ "no_uORF"
+)) %>% mutate(uORF_simple=case_when(
+  uORF_status != "no_uORF" ~ "uORF",
+  uORF_status == "no_uORF" ~ "no_uORF",
+))
+res_diffTE_df <- res_diffTE_df %>% mutate(uORF_status=case_when(
+  (Geneid %in% filter(uORF_res, subtype=="CPN" & ORF_type=="uORF")$gene_id==T) & (Geneid %in% filter(uORF_res, subtype=="SCPN" & ORF_type=="uORF")$gene_id==F) ~ "CPN_uORF",
+  (Geneid %in% filter(uORF_res, subtype=="CPN" & ORF_type=="uORF")$gene_id==F) & (Geneid %in% filter(uORF_res, subtype=="SCPN" & ORF_type=="uORF")$gene_id==T) ~ "SCPN_uORF",
+  (Geneid %in% filter(uORF_res, subtype=="CPN" & ORF_type=="uORF")$gene_id==T) & (Geneid %in% filter(uORF_res, subtype=="SCPN" & ORF_type=="uORF")$gene_id==T) ~ "SCPN&CPN_uORF",
+  (Geneid %in% filter(uORF_res, subtype=="CPN" & ORF_type=="Overlap_uORF")$gene_id==T) & (Geneid %in% filter(uORF_res, subtype=="SCPN" & ORF_type=="Overlap_uORF")$gene_id==F) ~ "CPN_Overlap_uORF",
+  (Geneid %in% filter(uORF_res, subtype=="CPN" & ORF_type=="Overlap_uORF")$gene_id==F) & (Geneid %in% filter(uORF_res, subtype=="SCPN" & ORF_type=="Overlap_uORF")$gene_id==T) ~ "SCPN_Overlap_uORF",
+  (Geneid %in% filter(uORF_res, subtype=="CPN" & ORF_type=="Overlap_uORF")$gene_id==T) & (Geneid %in% filter(uORF_res, subtype=="SCPN" & ORF_type=="Overlap_uORF")$gene_id==T) ~ "SCPN&CPN_Overlap_uORF",
+))
+
+
+TE_CPN_uORF_plot <- ggplot(res_TE_CPN_df, aes(x=log2FoldChange, color=uORF_status))+JF_theme+stat_ecdf(size=0.1)+facet_wrap(~contrast)+xlim(c(-2,2))+ylab("cumulative_fraction")+ggtitle("T.E. by uORF status, CPN")+xlab("T.E.")+theme(legend.position="top")+geom_hline(yintercept=0.5,size=0.2)+geom_vline(xintercept=0, size=0.2)
+TE_CPN_uORF_plot
+TE_SCPN_uORF_plot <- ggplot(res_TE_SCPN_df, aes(x=log2FoldChange, color=uORF_status))+JF_theme+stat_ecdf(size=0.1)+facet_wrap(~contrast)+xlim(c(-2,2))+ylab("cumulative_fraction")+ggtitle("T.E. by uORF status, SCPN")+xlab("T.E.")+theme(legend.position="top")+geom_hline(yintercept=0.5,size=0.2)+geom_vline(xintercept=0, size=0.2)
+TE_SCPN_uORF_plot
+
+
+TE_distros_for_GO_ID <- function(CPN_df, SCPN_df, GO_IDs, allGO=ensembl_to_allGO, GO_name) {
+  GO_ID_genes <- filter(allGO, go_id %in% GO_IDs)
+  CPN_df <- CPN_df %>% mutate(gene_set=case_when(
+    (Geneid %in% GO_ID_genes$ensembl_id)==T ~ GO_name,
+    (Geneid %in% GO_ID_genes$ensembl_id)==F ~ paste("not",GO_name, sep="_")
+  ))
+  SCPN_df <- SCPN_df %>% mutate(gene_set=case_when(
+    (Geneid %in% GO_ID_genes$ensembl_id)==T ~ GO_name,
+    (Geneid %in% GO_ID_genes$ensembl_id)==F ~ paste("not",GO_name, sep="_")
+  ))
+  CPN_GO_plot <- ggplot(CPN_df, aes(x=log2FoldChange, color=interaction( uORF_simple,gene_set)))+JF_theme+stat_ecdf(size=0.1)+xlim(c(-2,2))+ylab("cumulative_fraction")+ggtitle("T.E. by uORF status, CPN")+xlab("T.E.")+geom_hline(yintercept=0.5, size=0.2)+geom_vline(xintercept=0, size=0.2)+theme(legend.position = "top")
+  SCPN_GO_plot <- ggplot(SCPN_df, aes(x=log2FoldChange, color=interaction( uORF_simple,gene_set)))+JF_theme+stat_ecdf(size=0.1)+xlim(c(-2,2))+ylab("cumulative_fraction")+ggtitle("T.E. by uORF status, SCPN")+xlab("T.E.")+geom_hline(yintercept=0.5, size=0.2)+geom_vline(xintercept=0, size=0.2)+theme(legend.position = "top")
+  return_list <- list("CPN_plot"=CPN_GO_plot, "SCPN_plot"=SCPN_GO_plot)
+  return(return_list)
+}
+
+synapse_organization_TE_plots <- TE_distros_for_GO_ID(CPN_df = res_TE_CPN_df, SCPN_df = res_TE_SCPN_df, GO_IDs="GO:0050808", GO_name="Synapse_Org")
+axonogenesis_TE_plots <- TE_distros_for_GO_ID(CPN_df = res_TE_CPN_df, SCPN_df = res_TE_SCPN_df, GO_IDs="GO:0007409", GO_name="Axonogenesis")
+axon_development_TE_plots <-  TE_distros_for_GO_ID(CPN_df = res_TE_CPN_df, SCPN_df = res_TE_SCPN_df, GO_IDs="GO:0061564", GO_name="Axon dev.")
+mRNA_processing_TE_plots <- TE_distros_for_GO_ID(CPN_df = res_TE_CPN_df, SCPN_df = res_TE_SCPN_df, GO_IDs="GO:0006397", GO_name="mRNA processing")
+RNP_biogenesis_TE_plots <-  TE_distros_for_GO_ID(CPN_df = res_TE_CPN_df, SCPN_df = res_TE_SCPN_df, GO_IDs="GO:0022613", GO_name="ribonucleoprotein complex biogenesis")
+synapse_assembly_TE_plots <- TE_distros_for_GO_ID(CPN_df = res_TE_CPN_df, SCPN_df = res_TE_SCPN_df, GO_IDs="GO:0007416", GO_name="synapse assembly")
+
+res_TE_CPN_df <- res_TE_CPN_df %>% mutate(TE_quintile=ntile(log2FoldChange,n=5))
+res_TE_SCPN_df <- res_TE_SCPN_df %>% mutate(TE_quintile=ntile(log2FoldChange,n=5))
+
+TE_CPN_uORF_byQuntile_plot <- ggplot(res_TE_CPN_df, aes(x=log2FoldChange, color=uORF_status))+JF_theme+stat_ecdf(size=0.1)+facet_wrap(~TE_quintile,scales="free_x")+ylab("cumulative_fraction")+ggtitle("T.E. by uORF status, CPN")+xlab("T.E.")+theme(legend.position="top")+geom_hline(yintercept=0.5)+geom_vline(xintercept=0)+geom_hline(yintercept=0.5,size=0.2)+geom_vline(xintercept=0, size=0.2)
+
+
+```
+
+```{r uORFs_figure}
+
+uORFs_figure <- ORF_types_plot / (TE_CPN_uORF_plot + TE_SCPN_uORF_plot) / (uORF_ego_barplot$CPN_uORFs + uORF_ego_barplot$SCPN_uORFs) / (synapse_assembly_TE_plots$CPN_plot + synapse_assembly_TE_plots$SCPN_plot) / plot_spacer()
+
+pdfName=paste(outDir, "uORF_fig.pdf", sep="/")
+pdf(file=pdfName, width=6.5, height=9)
+plot(uORFs_figure)
+dev.off()
+
+```
+
+###Run RiboWaltz to evaluate 3-nt periodicity in the data sets. 
+###Requires a directory of transcriptome-aligned BamFiles and a gtf
+```{r bamToList, echo=FALSE}
+#Try loading in all the files and see how it goes. After a more careful
+#reading of the RiboWaltz vignette, it looks like it will process samples separately.
+#make a named vector mapping bamFile names (no path or extension needed) to descriptiveNames
+RP_samps <- filter(experimentTypes, exp=="RP")
+RP_samps <- data.frame(RP_samps)
+RP_descriptiveNames <- as.character(RP_samps$Samples)
+names(RP_descriptiveNames) <- as.character(RP_samps$samps)
+write.csv(file="test337.txt", RP_descriptiveNames)
+annotation_dt <- create_annotation(gtfpath = gtf, dataSource = "GRCm38.95",organism="Mus musculus")
+reads_list <- bamtolist(bamfolder = bamFiles, annotation = annotation_dt, transcript_align = FALSE, name_samples = RP_descriptiveNames) 
+```
+
+```{r lengthFilter, echo=FALSE}
+#From last run, need to set length_filter_mode="custom" for "bad" or
+#RNA-seq libraries to get scored. 
+filtered_list <- riboWaltz::length_filter(data = reads_list, length_filter_mode = "custom", length_range = c(27:33))
+```
+
+```{r psite, echo=FALSE}
+#perform p-site analysis for all samples, save data to a sub-folder of the transcriptome alignment.
+dir.create(outDir)
+psite_dir <- paste(outDir,'/psite', sep="")
+dir.create(psite_dir)
+psite <- psite(data=filtered_list, plot=T, plot_dir = psite_dir, plot_format = "pdf")
+```
+
+###Make plots that stratify by frame:
+####At first, I plotted using reads_list. This makes plots across all reads lengths
+####Plotting using the length-filtered reads (filtered_list) makes much nicer graphs.
+```{r stratify, echo=FALSE}
+reads_psite_list <- psite_info(filtered_list,psite)
+frames_stratified <- frame_psite_length(reads_psite_list, region="all",cl=90)
+strat_dir <- paste(outDir,"/frame_counts",sep="")
+dir.create(strat_dir)
+#setwd(strat_dir)
+pdfName <- paste(strat_dir, "Frame_counts_all_samples.pdf", sep="/" )
+frames_stratified$plot
+pdf(pdfName)
+frames_stratified$plot
+dev.off()
+#The plot looks squished if I try plotting all of them on the same plot. Try looping over the sampleNames and making individual plots for each one. Update: If I only include filtered reads, the graphs aren't too squished and are readable
+sampleNames=unique(psite$sample)
+for(sampleName in sampleNames) {
+  frame_stratified=frame_psite_length(reads_psite_list,  sample=sampleName, region="all",cl=90)
+  pdfName=paste(sampleName,".pdf",sep="")
+  pdf(file=pdfName)
+  plot(frame_stratified$plot)
+  dev.off()
+}
+```
+
+###P-site heatmaps (both directly from RiboWaltz, and by re-plotting the RiboWaltz data for a nicer-looking plot) for all samples in current set. 
+###Currently using scale factors as 1/CDS_reads:
+```{r psite_heatmap, echo=FALSE}
+heat_dir <- paste(outDir,"/heatmaps",sep="")
+dir.create(heat_dir)
+#setwd(heat_dir)
+#calculate scale factors as the inverse of CDS_counts
+scale_factors <- filter(featureCounts_tidy, exp=="RP") %>%
+  group_by(samps) %>%
+  summarize(CDS_reads=sum(counts)) %>%
+  mutate(scale_factors=1/CDS_reads) %>%
+  dplyr::select(scale_factors)
+scale_factors <- c(t(scale_factors))
+names(scale_factors) <- sampleNames
+#Build up the list of sample names
+sampNamesList <- list()
+for (sampName in sampleNames) {
+  sampNamesList[[sampName]] <- c(sampName)
+}
+psite_heatmap <- metaheatmap_psite(reads_psite_list, annotation=annotation_dt,log=F,utr5l=15, cdsl=30, utr3l=15, sample=sampNamesList, scale_factors=scale_factors)
+psite_heatmap$plot
+pdfName=paste(heat_dir, "psite_heatmap.pdf",sep="/")
+pdf(file=pdfName, width=11, height=8.5)
+plot(psite_heatmap$plot)
+dev.off()
+#Example plotting function that looks nicer than a heatmap:
+psite_signal_plot <- ggplot(psite_heatmap$dt, aes(x=distance,y=reads,color=sample))+geom_line()+JF_theme+facet_wrap(~reg)
+psite_signal_plot
+psite_dt <- psite_heatmap$dt
+psite_dt$reg <- plyr::revalue(psite_dt$reg, c("Distance from start (nt)"="from start (nt):","Distance from stop (nt)"="from stop (nt):"))
+psite_signal_heat <- ggplot(psite_dt, aes(x=distance,fill=reads,y=sample))+geom_tile()+facet_wrap(~reg)+scale_fill_gradient(low="white", high="black")+JF_theme+xlab("distance from start or stop (nt)")+ylab("")+xlab("")
+psite_signal_heat
+#look at how scaling is done. Try row normalization of raw read counts to compute frequencies within the regions of interest
+psite_heatmap_raw <- metaheatmap_psite(reads_psite_list, annotation=annotation_dt,log=F,utr5l=15, cdsl=30, utr3l=15, sample=sampNamesList)
+psite_dt_raw <- psite_heatmap_raw$dt
+psite_dt_raw$reg <- plyr::revalue(psite_dt_raw$reg, c("Distance from start (nt)"="from start (nt):","Distance from stop (nt)"="from stop (nt):"))
+psite_region_sums <- psite_dt_raw %>%
+  group_by(sample, reg) %>%
+  summarize(region_sum=sum(reads))
+psite_dt_raw <- merge(psite_dt_raw, psite_region_sums, by=c("sample","reg"))
+psite_dt_raw <- psite_dt_raw %>%
+  mutate(freq=reads/region_sum) %>% 
+  mutate(Samples=sample)
+titration_metadata <- dplyr::select(experimentTypes, Samples, exp, date, cells) %>% filter(exp=="RP")
+psite_dt_raw <- merge(psite_dt_raw, titration_metadata, by="Samples")
+psite_dt_raw <- psite_dt_raw %>%
+  mutate(Samples= fct_reorder(Samples,as.numeric(cells), .desc=F))
+#psite_dt_raw <- merge(psite_dt_raw, dplyr::filter(experimentTypes, Samples, exp_date), by="Samples")
+psite_freqHeat <- ggplot(psite_dt_raw, aes(x=distance,fill=freq,y=sample))+geom_tile()+facet_wrap(~reg)+scale_fill_gradient(low="white", high="black")+JF_theme+xlab("distance from start or stop (nt)")+ylab("")+xlab("")+theme(legend.position="bottom")
+psite_freqHeat
+pdfName=paste(heat_dir, "psite_freq_heatmap.pdf",sep="/")
+pdf(file=pdfName, width=11, height=8.5)
+plot(psite_freqHeat)
+dev.off()
+```
+
+###Next, calculate the percent of P-sites within each reading frame for each sample.
+```{r framePsite, echo=FALSE}
+frame_dir <- paste(outDir,"/frame_psite_percentage",sep="")
+dir.create(frame_dir)
+#setwd(frame_dir)
+frame_psites <- frame_psite(reads_psite_list, region="all")
+frame_psites$plot
+pdfName <- paste(frame_dir, "Frame_percentages_all_samples.pdf", sep="/")
+pdf(pdfName)
+plot(frame_psites$plot)
+dev.off()
+sampleNames=unique(psite$sample)
+for(sampleName in sampleNames) {
+  aFramePsite=frame_psite(reads_psite_list, sample=sampleName, region="all")
+  pdfName=paste(sampleName,".pdf",sep="")
+  pdf(file=pdfName)
+  plot(aFramePsite$plot)
+  dev.off()
+}
+```
+
+###And make P-site frequency plots for comparison across samples:
+```{r psitePlotting, echo=FALSE}
+plotFramePsites <- function(samples, frame_psites, sampNames=samples) {
+  #function to take in a list of samples, and frame_psites Ribowaltz object    #Plots the percentage of reads over CDSs in each frame, grouped by samples.
+  FPs <- frame_psites$dt
+  FPsToPlot <- filter(FPs, sample %in% samples & region == "CDS" )
+  FPplot <- ggplot(data=FPsToPlot, aes(x=sample,y=percentage,fill=as.factor(frame)))
+  FPplot <- FPplot+geom_bar(stat="identity", position=position_dodge())+theme_minimal(base_size=18)+scale_fill_discrete(name="frame")+ylim(0,100)+scale_x_discrete(labels=sampNames)+JF_theme
+  FPplot <- FPplot+theme(axis.text.x = element_text(angle = 45, hjust=1))+xlab("")+ylab("%P-sites in each frame")
+                           
+}
+#setwd(frame_dir)
+psiteFreq<- plotFramePsites(sampleNames,frame_psites)
+pdfName=paste(frame_dir, "psite_freq.pdf",sep="/")
+pdf(file=pdfName, width=11, height=8.5)
+plot(psiteFreq)
+dev.off()
+psiteFreq
+```
+
+###Plots for reviewer #3's questions about P-site frequency broken down by TE status.
+```{r Reviewer3_chunk}
+
+CPN_TE_high_tx <- ensmusg2ensmust %>% filter(Geneid %in% CPN_TE_high)
+SCPN_TE_high_tx <- ensmusg2ensmust %>% filter(Geneid %in% SCPN_TE_high)
+CPN_TE_low_tx <- ensmusg2ensmust %>% filter(Geneid %in% CPN_TE_low)
+SCPN_TE_low_tx <- ensmusg2ensmust %>% filter(Geneid %in% SCPN_TE_low)
+CPN_TE_notSig_tx <- ensmusg2ensmust %>% filter( (Geneid %in% CPN_TE_high)==F & (Geneid %in% CPN_TE_low)==F)
+SCPN_TE_notSig_tx <- ensmusg2ensmust %>% filter( (Geneid %in% SCPN_TE_high)==F & (Geneid %in% SCPN_TE_low)==F)
+
+transcripts_by_TE_list <- list("CPN_TE_high"=CPN_TE_high_tx$ensembl_transcript_id, "CPN_TE_low"=CPN_TE_low_tx$ensembl_transcript_id, "SCPN_TE_high"=SCPN_TE_high_tx$ensembl_transcript_id, "SCPN_TE_low"=SCPN_TE_low_tx$ensembl_transcript_id, "CPN_TE_noSig"=CPN_TE_notSig_tx$ensembl_transcript_id, "SCPN_TE_noSig"=SCPN_TE_notSig_tx$ensembl_transcript_id )
+
+split_psites_by_TE_list <- function(transcript_list, RPL=reads_psite_list) {
+  split_RPL <- lapply(RPL, function(x) {
+    filter(x, transcript %in% transcript_list)
+  })
+}
+
+splitPs <- lapply(transcripts_by_TE_list, split_psites_by_TE_list)
+
+splitP_frame_psites <- lapply(splitPs, frame_psite, region="all")
+splitP_frame_psite_bySample_plots <- lapply(splitP_frame_psites, plotFramePsites, samples=sampleNames)
+splitP_frame_psite_bySample_plots$CPN_TE_high <- splitP_frame_psite_bySample_plots$CPN_TE_high+ggtitle("CPN_TE_high")+theme(legend.position="top")
+splitP_frame_psite_bySample_plots$SCPN_TE_high <- splitP_frame_psite_bySample_plots$SCPN_TE_high+ggtitle("SCPN_TE_high")+theme(legend.position="top")
+splitP_frame_psite_bySample_plots$CPN_TE_low <- splitP_frame_psite_bySample_plots$CPN_TE_low+ggtitle("CPN_TE_low")+theme(legend.position="top")
+splitP_frame_psite_bySample_plots$SCPN_TE_low <- splitP_frame_psite_bySample_plots$SCPN_TE_low+ggtitle("SCPN_TE_low")+theme(legend.position="top")
+splitP_frame_psite_bySample_plots$CPN_TE_noSig <- splitP_frame_psite_bySample_plots$CPN_TE_noSig+ggtitle("SCPN_TE_noSig")+theme(legend.position="top")
+splitP_frame_psite_bySample_plots$SCPN_TE_noSig <- splitP_frame_psite_bySample_plots$SCPN_TE_noSig+ggtitle("SCPN_TE_noSig")+theme(legend.position="top")
+
+split_Reads <- lapply(transcripts_by_TE_list, split_psites_by_TE_list, RPL=reads_list)
+
+cds_distro_from_reads_list <- function(RL=reads_list) {
+  RL_length_distros <- lapply(RL, function(x) {
+  RL_lengths <- data.frame(x) %>% group_by(length) %>% summarize(length_counts_bySample=n())
+  })
+  RL_lengths <- bind_rows(RL_length_distros, .id="sample") %>% mutate(subtype=case_when(regexpr('^CPN', sample)==T~"CPN",regexpr('^SCPN', sample)==T~"SCPN"))
+  lengths_bySubtype <- RL_lengths %>% group_by(subtype, length) %>% summarize(length_counts_bySubtype=sum(length_counts_bySample))
+  readSums_bySubtype <- lengths_bySubtype %>% group_by(subtype) %>% summarize(readSums=sum(length_counts_bySubtype))
+  lengths_bySubtype <- lengths_bySubtype %>% left_join(readSums_bySubtype, by="subtype") %>% mutate(freq_bySubtype=length_counts_bySubtype/readSums)
+}
+
+split_Read_distros <- lapply(split_Reads, cds_distro_from_reads_list)  
+
+split_Read_distros <- bind_rows(split_Read_distros, .id="TE_status")
+
+CPN_length_distro_by_TE_plot <- ggplot(filter(split_Read_distros, subtype=="CPN" & regexpr("^CPN",TE_status)==T), aes(x=length,y=freq_bySubtype, color=TE_status))+JF_theme+geom_line()+theme(legend.position="top")+ggtitle("read length distro over CDS by CPN T.E. status")+xlim(c(20,40))
+CPN_length_distro_by_TE_plot
+SCPN_length_distro_by_TE_plot <- ggplot(filter(split_Read_distros, subtype=="SCPN" & regexpr("^SCPN",TE_status)==T), aes(x=length,y=freq_bySubtype, color=TE_status))+JF_theme+geom_line()+theme(legend.position="top")+ggtitle("read length distro over CDS by SCPN T.E. status")+xlim(c(20,40))
+SCPN_length_distro_by_TE_plot 
+
+#moveTo new Rmd
+loadFC2tidyCounts <- function(experimentType, CDS, five_utr, three_utr) {
+sampNames=experimentType$samps
+#write.csv(file="test.txt", sampNames)
+CDS <- read.table(file=CDS, header= T, sep="\t", stringsAsFactors = F)
+Five_prime <- read.table(file=five_utr, header= T, sep="\t", stringsAsFactors = F)
+Three_prime <- read.table(file=three_utr, header= T, sep="\t", stringsAsFactors = F)
+filteredCDS <- CDS %>% 
+  filter(Geneid %in% Five_prime$Geneid & Geneid %in% Three_prime$Geneid)
+filtered5p <- Five_prime %>%
+  filter(Geneid %in% Five_prime$Geneid & Geneid %in% Three_prime$Geneid)
+filtered3p <- Three_prime %>%
+  filter(Geneid %in% Five_prime$Geneid & Geneid %in% Three_prime$Geneid)
+
+maxSampCol <- 6+length(sampNames)
+mRNA_counts <- filteredCDS[,7:maxSampCol]+filtered5p[,7:maxSampCol]+filtered3p[,7:maxSampCol]
+CDS_counts <- filteredCDS[,7:maxSampCol]
+FiveP_counts <- filtered5p[,7:maxSampCol]
+ThreeP_counts <- filtered3p[,7:maxSampCol]
+colnames(CDS_counts) <- sampNames
+colnames(FiveP_counts) <- sampNames
+colnames(ThreeP_counts) <- sampNames
+CDS_counts <- CDS_counts %>% mutate(Geneid=filteredCDS$Geneid, Length=filteredCDS$Length, region="CDS")
+FiveP_counts <-FiveP_counts %>% mutate(Geneid=filteredCDS$Geneid, Length=filtered5p$Length, region="5' UTR")
+ThreeP_counts <-ThreeP_counts %>% mutate(Geneid=filteredCDS$Geneid, Length=filtered3p$Length, region="3' UTR")
+
+All_counts <- rbind(CDS_counts, FiveP_counts, ThreeP_counts)
+All_counts_tidy <- gather(All_counts, "samps","counts", -Geneid, -Length, -region)
+All_counts_tidy <- merge(All_counts_tidy, experimentType, by="samps")
+}
+
+All_counts_tidy <- loadFC2tidyCounts(experimentTypes, CDS, five_utr, three_utr)
+
+makeRegionCov <- function(ACT, sampNames=descriptiveNames) {
+  rpk <- ACT %>%
+  group_by(samps, region, exp) %>%
+  summarize(totCounts=sum(counts),totLength=sum(Length)) %>%
+  mutate(rpk=totCounts/(totLength/1000))
+
+million_mapped <- ACT %>%
+  group_by(samps) %>%
+  summarize(mRNA_mapped_mil=sum(counts)/1e6)
+
+rpkm <- merge(rpk, million_mapped, by="samps") %>%
+  mutate(rpkm=rpk/mRNA_mapped_mil)
+
+rpkm$region <- factor(rpkm$region, levels=c("5' UTR","CDS","3' UTR"))
+rpkm <- merge(rpkm, sampNames, by="samps")
+# rpkm_byRegion <- rpkm_byRegion %>%
+#   mutate(Samples=sampNames)
+}
+
+test <- makeRegionCov(ACT=All_counts_tidy)
+
+geneids_by_TE_list <- list("CPN_TE_high"=CPN_TE_high, "CPN_TE_low"=CPN_TE_low, "CPN_TE_noSig"=CPN_TE_notSig,
+                           "SCPN_TE_high"=SCPN_TE_high, "SCPN_TE_low"=SCPN_TE_low, "SCPN_TE_noSig"=SCPN_TE_notSig)
+split_ACT <- lapply(geneids_by_TE_list, function(x, ACT=All_counts_tidy) {
+  filter(ACT, Geneid %in% x)
+})
+split_ACT_regionCovs <- lapply(split_ACT, makeRegionCov)
+split_ACT_regionCovs <- split_ACT_regionCovs %>% bind_rows(.id="TE_status") %>% mutate(subtype=case_when(regexpr('^CPN', descriptiveNames)==T~"CPN",regexpr('^SCPN', descriptiveNames)==T~"SCPN"))
+
+CPN_regionCov_by_TE_status <- ggplot(filter(split_ACT_regionCovs, subtype=="CPN" & exp=="RP" & regexpr("^CPN",TE_status)==T), aes(x=TE_status, y=rpkm, fill=region))+JF_theme+geom_col(position="dodge")+theme(legend.position = "top")+facet_wrap(~descriptiveNames, nrow=1)+ggtitle("Coverage by region by T.E. status, CPN")
+CPN_regionCov_by_TE_status 
+SCPN_regionCov_by_TE_status <- ggplot(filter(split_ACT_regionCovs, subtype=="SCPN" & exp=="RP" & regexpr("^SCPN",TE_status)==T), aes(x=TE_status, y=rpkm, fill=region))+JF_theme+geom_col(position="dodge")+theme(legend.position = "top")+facet_wrap(~descriptiveNames, nrow=1)+ggtitle("Coverage by region by T.E. status, SCPN")
+SCPN_regionCov_by_TE_status
+
+TE_riboWaltz_QC_fig <- (CPN_length_distro_by_TE_plot | SCPN_length_distro_by_TE_plot) / (splitP_frame_psite_bySample_plots$CPN_TE_high + splitP_frame_psite_bySample_plots$CPN_TE_noSig + splitP_frame_psite_bySample_plots$CPN_TE_low) / (splitP_frame_psite_bySample_plots$SCPN_TE_high + splitP_frame_psite_bySample_plots$SCPN_TE_noSig + splitP_frame_psite_bySample_plots$SCPN_TE_low) / (CPN_regionCov_by_TE_status | SCPN_regionCov_by_TE_status )
+
+```
+```{r sesh}
+sessionInfo()
+
+```
 

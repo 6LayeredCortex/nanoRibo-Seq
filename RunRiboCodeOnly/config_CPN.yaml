@@ -1,0 +1,15 @@
+samples:
+   - JF134_S1
+   - JF135_S2
+   - JF142_S9
+   - JF143_S10
+
+bamPath: "/n/holyscratch01/macklis_lab/jfroberg/CellReports_round2/dedupBams"
+
+RiboCode:
+    metadata: "../nanoRibo-Seq/RunRiboCodeOnly/CPN_meta.csv"
+    modules: "Anaconda/5.0.1-fasrc02"
+    shell_script: "../nanoRibo-Seq/scripts/separateRPbams.sh"
+    annot_gtf: "/n/macklis_lab/users/jfroberg/gtfs/mm10_RiboCode_gtfs/RiboCode_annot.gtf"
+    list_script: "../nanoRibo-Seq/scripts/bamFileList_script.sh"   
+    comboScript: "../nanoRibo-Seq/scripts/combineORFcounts.sh"
