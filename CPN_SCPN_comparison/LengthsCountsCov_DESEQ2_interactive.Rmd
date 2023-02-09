@@ -542,8 +542,11 @@ log2FC_ecdf_plot
 AF_dds <- runDESeq_bySubtype(filter(featureCounts_tidy_sampFilt, exp=="AF"))
 RP_dds <- runDESeq_bySubtype(filter(featureCounts_tidy_sampFilt, exp=="RP"))
 
-AF_fullDEseq <- data.frame(mcols(AF_dds), exp="AF", Geneid=rownames(mcols(AF_dds)))
-RP_fullDEseq <- data.frame(mcols(RP_dds),exp="RP", Geneid=rownames(mcols(RP_dds))) 
+AF_fullDEseq <- data.frame(mcols(AF_dds), exp="AF", Geneid=rownames(mcols(AF_dds))) %>% filter(allZero==F)
+RP_fullDEseq <- data.frame(mcols(RP_dds),exp="RP", Geneid=rownames(mcols(RP_dds))) %>% filter(allZero==F)
+AF_fullDEseq <- filter(AF_fullDEseq, (Geneid %in% RP_fullDEseq$Geneid)==T)
+RP_fullDEseq <- filter(RP_fullDEseq, (Geneid %in% AF_fullDEseq$Geneid)==T)
+
 AF_RP_full_DEseq <- bind_rows(RP_fullDEseq, AF_fullDEseq)  %>% filter(Geneid %in% subtypeComparison_res_df$Geneid)
 
 AF_RP_distGeneEst <- AF_RP_full_DEseq %>% dplyr::select(Geneid, dispGeneEst, exp) %>% spread(key=exp, value=dispGeneEst)
@@ -557,10 +560,11 @@ AFvsRP_dispersionPlot <- ggplot(AF_RP_dispersions, aes(x=AF,y=RP))+JF_theme+geom
 ###Make AF and RP sim data sets using the estimated dispersion parameters.
 ###Deep knowledge here: baseMean represents the mean counts per sample after normalizing for libSize!
 ###Also size=1/dispersion, where dispersion is the DESeq2 dispersion. 
-###Got 3/9967 diff exp genes at padj < 0.1 for simulated AF data.
-
-```{r simulate_using_DESeq2}
+###Got 6/9949 diff exp genes at padj < 0.1 for simulated RP data, and 4/9949 for AF.
+###Nice flat pval distros too for n1 vs n2 comparison. 
+```{r sim_setup}
 AF_fullDEseq_filt <- AF_fullDEseq %>% filter(Geneid %in% subtypeComparison_res_df$Geneid)
+RP_fullDEseq_filt <- RP_fullDEseq %>% filter(Geneid %in% subtypeComparison_res_df$Geneid)
 
 drawFromNbinom <- function(baseMean, dispersion,Geneid, n=8) {
   #returnList=list("bM"=baseMean,"disp"=dispersion)
@@ -580,21 +584,6 @@ simFrom_fullDESeq <- function(fullDESeq, seed=1182, cond_n=4) {
   sim <- data.frame(sim)
 }
 
-AF_sim <- simFrom_fullDESeq(fullDESeq=AF_fullDEseq_filt, cond_n=4)
-AF_sim_DEseq_res  <- DESeq2_RNAonly_runme(test)
-
-set.seed(62189)
-
-AF_sim <- mapply(drawFromNbinom, AF_fullDEseq_filt$baseMean, AF_fullDEseq_filt$dispersion, AF_fullDEseq_filt$Geneid)
-AF_sim <- t(AF_sim)
-sim_sampNames <- c("S1_n1","S2_n1","S3_n1","S4_n1","S5_n2","S6_n2","S7_n2","S8_n2")
-colnames(AF_sim) <- c("Geneid", sim_sampNames)
-rownames(AF_sim) <- AF_sim[,1]
-AF_sim <- matrix(as.numeric(AF_sim[,-1]), ncol=ncol(AF_sim[,-1]), dimnames=list(rownames(AF_sim),colnames(AF_sim[,-1])))
-AF_sim <- data.frame(AF_sim)
-
-#AF_sim <- data.frame(as.numeric(AF_sim[,-1]))
-
 DESeq2_RNAonly_runme <- function(countsData) {
   colData <- data.frame(condition=str_extract(colnames(countsData), regex("n.")))
   #return(colData)
@@ -605,7 +594,11 @@ DESeq2_RNAonly_runme <- function(countsData) {
 }
 sig_threshold <- 0.1
 
-AF_sim_DEseq_res <- DESeq2_RNAonly_runme(AF_sim)
+
+AF_sim <- simFrom_fullDESeq(fullDESeq=AF_fullDEseq_filt, cond_n=4)
+AF_sim_DEseq_res  <- DESeq2_RNAonly_runme(AF_sim)
+RP_sim <- simFrom_fullDESeq(fullDESeq=RP_fullDEseq_filt, cond_n=4)
+RP_sim_DEseq_res  <- DESeq2_RNAonly_runme(RP_sim)
 
 
 ```
