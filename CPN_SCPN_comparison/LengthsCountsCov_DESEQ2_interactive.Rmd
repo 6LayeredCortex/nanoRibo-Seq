@@ -438,6 +438,30 @@ colData <- dplyr::arrange(colData, samps)
 rownames(colData) <- colData$samps
 colData <- dplyr::select(colData, -samps)
 
+runDESeq_bySubtype <- function(FC) {
+  DESeq2_counts_matrix <- FC %>%
+    dplyr::select(samps, Geneid, counts) %>%
+    spread("samps","counts")
+  rownames(DESeq2_counts_matrix) <- DESeq2_counts_matrix$Geneid
+  DESeq2_counts_matrix <- dplyr::select(DESeq2_counts_matrix, -Geneid)
+  
+  # colData <- filter(metaData, samps %in% FC$samps & region %in% regions & stage %in% stages & strain %in% strains) %>% dplyr::select(samps, stage, strain, region)
+  colData <- FC %>%
+    group_by(samps, exp, subtype) %>%
+    summarize(n=n()) %>%
+    dplyr::select(-n) %>%
+    dplyr::arrange(samps)
+  colData <- data.frame(colData)
+rownames(colData) <- colData$samps
+colData <- dplyr::select(colData, -samps)
+colData <- droplevels(colData)
+
+dds <- DESeqDataSetFromMatrix(DESeq2_counts_matrix, colData = colData, design=~subtype)
+dds <- DESeq(dds)
+}
+
+test <- runDESeq_bySubtype(featureCounts_tidy_sampFilt)
+
 ```
 
 ###Run DESeq2, including an exp:subtype interaction term. The genes with this 
@@ -509,6 +533,84 @@ log2FC_ecdf_plot <- filter(subtypeComparison_res_df, (contrast %in% c("TE_SCPN",
 log2FC_ecdf_plot
 
 ```
+
+###Are AF and RP dispersions different?
+###Answer: yes. dispersion correlation is 0.2857. Have to draw them from different distributions. 
+
+```{r AFvsRP_DESeq2}
+
+AF_dds <- runDESeq_bySubtype(filter(featureCounts_tidy_sampFilt, exp=="AF"))
+RP_dds <- runDESeq_bySubtype(filter(featureCounts_tidy_sampFilt, exp=="RP"))
+
+AF_fullDEseq <- data.frame(mcols(AF_dds), exp="AF", Geneid=rownames(mcols(AF_dds)))
+RP_fullDEseq <- data.frame(mcols(RP_dds),exp="RP", Geneid=rownames(mcols(RP_dds))) 
+AF_RP_full_DEseq <- bind_rows(RP_fullDEseq, AF_fullDEseq)  %>% filter(Geneid %in% subtypeComparison_res_df$Geneid)
+
+AF_RP_distGeneEst <- AF_RP_full_DEseq %>% dplyr::select(Geneid, dispGeneEst, exp) %>% spread(key=exp, value=dispGeneEst)
+AFvsRP_dispGeneEstPlot <- ggplot(AF_RP_distGeneEst, aes(x=AF,y=RP))+JF_theme+geom_point()+xlim(c(0,2.5))+ylim(c(0,2.5))
+
+AF_RP_dispersions <- AF_RP_full_DEseq %>% dplyr::select(Geneid, dispersion, exp) %>% spread(key=exp, value=dispersion)
+AFvsRP_dispersionPlot <- ggplot(AF_RP_dispersions, aes(x=AF,y=RP))+JF_theme+geom_point()
+
+```
+
+###Make AF and RP sim data sets using the estimated dispersion parameters.
+###Deep knowledge here: baseMean represents the mean counts per sample after normalizing for libSize!
+###Also size=1/dispersion, where dispersion is the DESeq2 dispersion. 
+###Got 3/9967 diff exp genes at padj < 0.1 for simulated AF data.
+
+```{r simulate_using_DESeq2}
+AF_fullDEseq_filt <- AF_fullDEseq %>% filter(Geneid %in% subtypeComparison_res_df$Geneid)
+
+drawFromNbinom <- function(baseMean, dispersion,Geneid, n=8) {
+  #returnList=list("bM"=baseMean,"disp"=dispersion)
+  draws <- rnbinom(n=n, size=1/dispersion, mu=baseMean)
+  return(c(Geneid, draws))
+}
+
+simFrom_fullDESeq <- function(fullDESeq, seed=1182, cond_n=4) {
+  set.seed(seed)
+  sim <- mapply(drawFromNbinom, fullDESeq$baseMean, fullDESeq$dispersion, fullDESeq$Geneid, cond_n*2)
+  sim <- t(sim)
+  simSampNames <- c(paste(paste("S",seq(1:cond_n),sep=""),"n1",sep="_")
+    ,paste(paste("S",seq(1:cond_n),sep=""),"n2",sep="_")) 
+  colnames(sim) <- c("Geneid",simSampNames)
+  rownames(sim) <- sim[,1]
+  sim <- matrix(as.numeric(sim[,-1]), ncol=ncol(sim[,-1]), dimnames=list(rownames(sim),colnames(sim[,-1])))
+  sim <- data.frame(sim)
+}
+
+AF_sim <- simFrom_fullDESeq(fullDESeq=AF_fullDEseq_filt, cond_n=4)
+AF_sim_DEseq_res  <- DESeq2_RNAonly_runme(test)
+
+set.seed(62189)
+
+AF_sim <- mapply(drawFromNbinom, AF_fullDEseq_filt$baseMean, AF_fullDEseq_filt$dispersion, AF_fullDEseq_filt$Geneid)
+AF_sim <- t(AF_sim)
+sim_sampNames <- c("S1_n1","S2_n1","S3_n1","S4_n1","S5_n2","S6_n2","S7_n2","S8_n2")
+colnames(AF_sim) <- c("Geneid", sim_sampNames)
+rownames(AF_sim) <- AF_sim[,1]
+AF_sim <- matrix(as.numeric(AF_sim[,-1]), ncol=ncol(AF_sim[,-1]), dimnames=list(rownames(AF_sim),colnames(AF_sim[,-1])))
+AF_sim <- data.frame(AF_sim)
+
+#AF_sim <- data.frame(as.numeric(AF_sim[,-1]))
+
+DESeq2_RNAonly_runme <- function(countsData) {
+  colData <- data.frame(condition=str_extract(colnames(countsData), regex("n.")))
+  #return(colData)
+  rownames(colData) <- colnames(countsData)
+  dds <- DESeqDataSetFromMatrix(countData = countsData, colData = colData, design=~condition)
+  dds <- DESeq(dds)
+  res <- data.frame(results(dds))
+}
+sig_threshold <- 0.1
+
+AF_sim_DEseq_res <- DESeq2_RNAonly_runme(AF_sim)
+
+
+```
+
+
 
 ```{r enrichGO}
 rna_universe <- subtypeComparison_res_df %>%
@@ -760,6 +862,30 @@ TE_CPN_uORF_byQuntile_plot <- ggplot(res_TE_CPN_df, aes(x=log2FoldChange, color=
 
 
 ```
+
+```{r ribotricer_uORFs}
+RT_CPN_file <- "CPN_RiboCode/ribotracer_detected_ORFs_translating_ORFs.tsv"
+RT_SCPN_file <- "SCPN_RiboCode/ribotracer_detected_ORFs_translating_ORFs.tsv"
+
+RT_CPN <- read.table(RT_CPN_file,header=T, sep="\t")
+
+collapse_ribotricer <- function(RT) {
+  ###Take in a ribotricer file, split ORF_ID into its fields, append gene_name 
+  ##and collapse ORFs with the same stop codon or stop condon, take the ORF with the longest length
+  RT_collapsed <- RT %>% 
+    separate(col=ORF_ID, sep="_", into=c("tx_id","start","stop","obs_length"), remove=F) %>%
+    mutate(ORF_by_geneid=case_when(
+      strand=="+" ~ paste(gene_id,start,stop,obs_length, sep="_"),
+      strand=="-" ~ paste(gene_id,stop,start,obs_length, sep="_"))) %>%
+    group_by(gene_id, ORF_type, start) %>% top_n(1,wt=length) %>%
+    group_by(gene_id, ORF_type, stop) %>% top_n(1,wt=length)
+}
+
+test <- collapse_ribotricer(RT_CPN)
+
+```
+
+
 
 ```{r uORFs_figure}
 
@@ -1035,12 +1161,17 @@ split_ACT <- lapply(geneids_by_TE_list, function(x, ACT=All_counts_tidy) {
 split_ACT_regionCovs <- lapply(split_ACT, makeRegionCov)
 split_ACT_regionCovs <- split_ACT_regionCovs %>% bind_rows(.id="TE_status") %>% mutate(subtype=case_when(regexpr('^CPN', descriptiveNames)==T~"CPN",regexpr('^SCPN', descriptiveNames)==T~"SCPN"))
 
-CPN_regionCov_by_TE_status <- ggplot(filter(split_ACT_regionCovs, subtype=="CPN" & exp=="RP" & regexpr("^CPN",TE_status)==T), aes(x=TE_status, y=rpkm, fill=region))+JF_theme+geom_col(position="dodge")+theme(legend.position = "top")+facet_wrap(~descriptiveNames, nrow=1)+ggtitle("Coverage by region by T.E. status, CPN")
+CPN_regionCov_by_TE_status <- ggplot(filter(split_ACT_regionCovs, subtype=="CPN" & exp=="RP" & regexpr("^CPN",TE_status)==T), aes(x=TE_status, y=rpkm, fill=region))+JF_theme+geom_col(position="dodge")+theme(legend.position = "top")+facet_wrap(~descriptiveNames, nrow=1)+ggtitle("Coverage by region by T.E. status, CPN")+theme(axis.text.x = element_text(angle = 45, hjust=1))
 CPN_regionCov_by_TE_status 
-SCPN_regionCov_by_TE_status <- ggplot(filter(split_ACT_regionCovs, subtype=="SCPN" & exp=="RP" & regexpr("^SCPN",TE_status)==T), aes(x=TE_status, y=rpkm, fill=region))+JF_theme+geom_col(position="dodge")+theme(legend.position = "top")+facet_wrap(~descriptiveNames, nrow=1)+ggtitle("Coverage by region by T.E. status, SCPN")
+SCPN_regionCov_by_TE_status <- ggplot(filter(split_ACT_regionCovs, subtype=="SCPN" & exp=="RP" & regexpr("^SCPN",TE_status)==T), aes(x=TE_status, y=rpkm, fill=region))+JF_theme+geom_col(position="dodge")+theme(legend.position = "top")+facet_wrap(~descriptiveNames, nrow=1)+ggtitle("Coverage by region by T.E. status, SCPN")+theme(axis.text.x = element_text(angle = 45, hjust=1))
 SCPN_regionCov_by_TE_status
 
-TE_riboWaltz_QC_fig <- (CPN_length_distro_by_TE_plot | SCPN_length_distro_by_TE_plot) / (splitP_frame_psite_bySample_plots$CPN_TE_high + splitP_frame_psite_bySample_plots$CPN_TE_noSig + splitP_frame_psite_bySample_plots$CPN_TE_low) / (splitP_frame_psite_bySample_plots$SCPN_TE_high + splitP_frame_psite_bySample_plots$SCPN_TE_noSig + splitP_frame_psite_bySample_plots$SCPN_TE_low) / (CPN_regionCov_by_TE_status | SCPN_regionCov_by_TE_status )
+TE_riboWaltz_QC_fig <- (CPN_length_distro_by_TE_plot | SCPN_length_distro_by_TE_plot) / (splitP_frame_psite_bySample_plots$CPN_TE_high + splitP_frame_psite_bySample_plots$CPN_TE_noSig + splitP_frame_psite_bySample_plots$CPN_TE_low) / (splitP_frame_psite_bySample_plots$SCPN_TE_high + splitP_frame_psite_bySample_plots$SCPN_TE_noSig + splitP_frame_psite_bySample_plots$SCPN_TE_low) / (CPN_regionCov_by_TE_status | SCPN_regionCov_by_TE_status ) + plot_annotation(tag_levels = list(c("A","B","C","D","E","F","G","H","I","J"))) & theme(plot.tag=element_text(size=12, face="bold"))+theme(legend.key.size=unit(0.5,"line"))
+
+pdfName=paste(outDir, "TE_riboWaltz_QC_fig.pdf", sep="/")
+pdf(file=pdfName, width=6.5, height=9)
+plot(TE_riboWaltz_QC_fig)
+dev.off()
 
 ```
 ```{r sesh}

@@ -1,0 +1,302 @@
+---
+title: "nanoRibo-Seq Simulation"
+output: html_document
+date: '2023-02-06'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library('devtools')
+library('tidyverse')
+library('riboWaltz')
+library("rmarkdown")
+library("patchwork")
+library("pheatmap")
+library("RColorBrewer")
+library("ggplotify")
+library("topGO")
+library("ggstance")
+library("DESeq2")
+library("biomaRt")
+library("UpSetR")
+library("GGally")
+library("clusterProfiler")
+library("org.Mm.eg.db")
+library("enrichplot")
+library("powsimR")
+JF_theme <- theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black"), plot.title = element_text(size = 7, face = "bold"),legend.title=element_text(size=7), legend.text=element_text(size=7), axis.text = element_text(size=7), axis.title.x = element_text(size=7),axis.title.y=element_text(size=7))
+
+```
+
+```{r install_powsimR}
+ipak <- function(pkg, repository = c("CRAN", "Bioconductor", "github")) {
+    new.pkg <- pkg[!(pkg %in% installed.packages()[, "Package"])]
+    # new.pkg <- pkg
+    if (length(new.pkg)) {
+        if (repository == "CRAN") {
+            install.packages(new.pkg, dependencies = TRUE)
+        }
+        if (repository == "Bioconductor") {
+            if (strsplit(version[["version.string"]], " ")[[1]][3] > "4.0.0") {
+                if (!requireNamespace("BiocManager")) {
+                  install.packages("BiocManager")
+                }
+                BiocManager::install(new.pkg, dependencies = TRUE, ask = FALSE)
+            }
+            if (strsplit(version[["version.string"]], " ")[[1]][3] < "3.6.0") {
+                stop(message("powsimR depends on packages and functions that are only available in R 4.0.0 and higher."))
+            }
+        }
+        if (repository == "github") {
+            devtools::install_github(new.pkg, build_vignettes = FALSE, force = FALSE, 
+                dependencies = TRUE)
+        }
+    }
+}
+
+# CRAN PACKAGES
+cranpackages <- c("broom", "cobs", "cowplot", "data.table", "doParallel", "dplyr", 
+    "DrImpute", "fastICA", "fitdistrplus", "foreach", "future", "gamlss.dist", "ggplot2", 
+    "ggpubr", "ggstance", "grDevices", "grid", "Hmisc", "kernlab", "MASS", "magrittr", 
+    "MBESS", "Matrix", "matrixStats", "mclust", "methods", "minpack.lm", "moments", 
+    "msir", "NBPSeq", "nonnest2", "parallel", "penalized", "plyr", "pscl", "reshape2", 
+    "Rmagic", "rsvd", "Rtsne", "scales", "Seurat", "snow", "sctransform", "stats", 
+    "tibble", "tidyr", "truncnorm", "VGAM", "ZIM", "zoo")
+ipak(cranpackages, repository = "CRAN")
+
+# BIOCONDUCTOR
+biocpackages <- c("bayNorm", "baySeq", "BiocGenerics", "BiocParallel", "DESeq2", 
+    "EBSeq", "edgeR", "IHW", "iCOBRA", "limma", "Linnorm", "MAST", "monocle", "NOISeq", 
+    "qvalue", "ROTS", "RUVSeq", "S4Vectors", "scater", "scDD", "scde", "scone", "scran", 
+    "SCnorm", "SingleCellExperiment", "SummarizedExperiment", "zinbwave")
+ipak(biocpackages, repository = "Bioconductor")
+
+# GITHUB
+githubpackages <- c("cz-ye/DECENT", "nghiavtr/BPSC", "mohuangx/SAVER", "statOmics/zingeR", 
+    "Vivianstats/scImpute")
+ipak(githubpackages, repository = "github")
+
+
+powsimRdeps <- data.frame(Package = c(cranpackages, 
+                                      biocpackages, 
+                                      sapply(strsplit(githubpackages, "/"), "[[", 2)), 
+                          stringsAsFactors = F)
+
+ip <- as.data.frame(installed.packages()[,c(1,3:4)], stringsAsFactors = F)
+
+ip.check <- cbind(powsimRdeps, 
+                  Version = ip[match(powsimRdeps$Package, rownames(ip)),"Version"]) 
+
+table(is.na(ip.check$Version)) 
+
+install.packages("rmdformats")
+
+```
+```{r load_data}
+
+experimentTypeFile="./RiboProfTest5/experimentTypesFull_single_hemi.csv"
+lengthCountsFile="./RiboProfTest5/dedup_lengthDistroTidy.txt"
+CDS="./RiboProfTest5/dedupBams/featureCounts_CDS_summary.txt"
+three_utr="./RiboProfTest5/dedupBams/featureCounts_three_prime_utr_summary.txt"
+five_utr="./RiboProfTest5/dedupBams/featureCounts_five_prime_utr_summary.txt"
+
+```
+
+###Load in the metadata from the experiment types file. 
+###Compute "descriptive names" by dropping the "samps" and "date" fields and pasting together.
+###Save descriptiveNames as Upper Case "Samples" in experimentTypes.
+```{r loadMetadata, echo=FALSE}
+experimentTypes=read.csv(experimentTypeFile)
+ descriptiveNames <- experimentTypes %>%
+  unite(col="descriptiveNames", -samps, -date,-exp, sep=".")
+ descriptiveNames <- dplyr::select(descriptiveNames, samps, descriptiveNames)
+ experimentTypes$Samples <- descriptiveNames$descriptiveNames
+ experimentTypes
+```
+
+###Load in the featureCounts. Use only CDS reads for RiboProf, 3'+5'UTR+CDS reads for AlkFrag libraries
+```{r loadFeatureCounts, echo=FALSE}
+loadFC <- function(experimentType, CDS, five_utr, three_utr) {
+sampNames=experimentType$samps
+CDS <- read.table(file=CDS, header= T, sep="\t", stringsAsFactors = F)
+Five_prime <- read.table(file=five_utr, header= T, sep="\t", stringsAsFactors = F)
+Three_prime <- read.table(file=three_utr, header= T, sep="\t", stringsAsFactors = F)
+filteredCDS <- CDS %>% 
+  filter(Geneid %in% Five_prime$Geneid & Geneid %in% Three_prime$Geneid)
+filtered5p <- Five_prime %>%
+  filter(Geneid %in% Five_prime$Geneid & Geneid %in% Three_prime$Geneid)
+filtered3p <- Three_prime %>%
+  filter(Geneid %in% Five_prime$Geneid & Geneid %in% Three_prime$Geneid)
+
+#move to new Rmd
+maxSampCol <- 6+length(sampNames)
+mRNA_counts <- filteredCDS[,7:maxSampCol]+filtered5p[,7:maxSampCol]+filtered3p[,7:maxSampCol]
+CDS_counts <- filteredCDS[,7:maxSampCol]
+#
+
+colnames(mRNA_counts) <- sampNames
+colnames(CDS_counts) <- sampNames
+mRNA_counts <- mRNA_counts %>%
+  mutate(Geneid=filteredCDS$Geneid, Length=filteredCDS$Length)
+CDS_counts <- CDS_counts %>%
+  mutate(Geneid=filteredCDS$Geneid, Length=filteredCDS$Length)
+mRNA_counts_tidy <- gather(mRNA_counts,"samps","counts", -Geneid, -Length)
+CDS_counts_tidy <- gather(CDS_counts,"samps","counts", -Geneid, -Length)
+mRNA_counts_tidy <- merge(mRNA_counts_tidy, experimentType, by="samps")
+CDS_counts_tidy <- merge(CDS_counts_tidy, experimentType, by="samps")
+
+raw_counts_tidy <- rbind(filter(mRNA_counts_tidy, exp=="AF"),filter(CDS_counts_tidy, exp=="RP"))
+}
+
+
+featureCounts_tidy <- loadFC(experimentTypes, CDS, five_utr, three_utr)
+total_mRNA_counts <- featureCounts_tidy %>%
+  group_by(Samples) %>%
+  summarize(mRNA_counts=sum(counts))
+total_mRNA_counts
+total_mRNA_counts_plot <- ggplot(total_mRNA_counts, aes(x=Samples, y=mRNA_counts, fill=Samples))+geom_bar(stat="identity", position="dodge")+JF_theme+theme(axis.text.x = element_text(angle = 45, hjust=1))+xlab("")+geom_hline(yintercept = 150000)
+total_mRNA_counts_plot
+
+experimentTypesPlus_mRNACounts <- merge(total_mRNA_counts, experimentTypes, by="Samples")
+
+
+total_mRNA_counts_facet <- ggplot(experimentTypesPlus_mRNACounts, aes(x=Samples, y=mRNA_counts, fill=Samples))+geom_bar(stat="identity", position="dodge")+JF_theme+theme(axis.text.x = element_text(angle = 45, hjust=1))+xlab("")+geom_hline(yintercept = 150000)+facet_wrap(~exp, nrow=2, scales="free_x")
+total_mRNA_counts_facet
+```
+#Estimate negbinom parameters from the n=3 data sets with >300k reads.
+#Estimate parameters separately for AF and RP data.
+```{r parameter_estimation}
+
+AF_counts_matrix <- featureCounts_tidy %>% filter(samps %in% c("JF131_S8","JF132_S9","JF127_S4","JF126_S3")==F & exp=="AF") %>% group_by(Geneid, samps) %>% dplyr::select(Geneid, counts, samps, Length) %>% spread(key="samps",value="counts") %>% column_to_rownames("Geneid")
+AF_counts_matrix$means <- rowMeans(AF_counts_matrix)
+AF_counts_matrix <- AF_counts_matrix %>% top_n(means, n=8000) %>% dplyr::select(-means)
+AF_geneLengths <- AF_counts_matrix$Length
+AF_counts_matrix <- dplyr::select(AF_counts_matrix, -Length)
+
+RP_counts_matrix <- featureCounts_tidy %>% filter(samps %in% c("JF131_S8","JF132_S9","JF127_S4","JF126_S3")==F & exp=="RP") %>% dplyr::select(Geneid, counts, samps, Length) %>% spread(key="samps",value="counts") %>% column_to_rownames("Geneid")
+RP_counts_matrix$means <- rowMeans(RP_counts_matrix)
+RP_counts_matrix <- RP_counts_matrix %>% top_n(means, n=8000) %>% dplyr::select(-means)
+RP_geneLengths <- RP_counts_matrix$Length
+RP_counts_matrix <- dplyr::select(RP_counts_matrix, -Length)
+
+AF_estParams <- estimateParam(AF_counts_matrix, RNAseq = "bulk", Lengths=AF_geneLengths, Distribution = "NB", Protocol="Read")
+AF_paramPlot <- plotParam(AF_estParams)
+
+RP_estParams <- estimateParam(RP_counts_matrix, RNAseq = "bulk", Lengths=RP_geneLengths, Distribution = "NB", Protocol="Read")
+RP_paramPlot <- plotParam(RP_estParams)
+
+```
+###Simulation works well, in the sense that setting the number of DE genes (p.DE) to zero
+###Yields distributions with ~10/8000 genes called as DE at FDR=0.1 by DESeq2. So low FP rate in true null
+###differences between groups.
+###Data structures are clunky though; I ask to sim ngenes=8000, and I get about 7950 sim'd.
+###But yet get lFCs and DE_ids (true positive) labels for all 8000.
+###The numbers don't match up, so I can't just add the true positive labels to the counts data.
+###Maybe at the tail end, some genes just happen to end up with 0 counts for all sample and thus don't get DESeq2 counts. 
+
+```{r RNA_seq_simulation}
+LFC_vector <- c(-4,-3,-2,-1.5,1.5, 2,3,4)
+numGenes <- 10000
+AF_sim <- Setup(ngenes=numGenes, nsims=3, p.DE=0, pLFC=LFC_vector, n1=c(4),n2=c(4), estParamRes=AF_estParams)
+AF_res <- simulateDE(AF_sim, Counts=T, DEmethod = "DESeq2")
+AF_sim_counts_list <- AF_res$Counts
+
+RP_sim <- Setup(ngenes=numGenes, nsims=3, p.DE=0, pLFC= LFC_vector, n1=c(4),n2=c(4), estParamRes=RP_estParams)
+RP_res <- simulateDE(RP_sim, Counts=T, DEmethod = "DESeq2")
+RP_sim_counts_list <- RP_res$Counts
+
+
+#Tried to label true positives from intersecting the LFCs and counts matrix, but the counts matrices are slightly shorter so the indexing doesn't work.
+# labelTruePos <- function(simres) {
+#   #take in a powsimR simulatedDE object. Label the true positives, and their expected LFC
+#   LFCs <- simres$DESetup$pLFC
+#   sims=seq(from=1, to=length(LFCs),by=1)
+#   countsData <- simres$Counts[[1]]
+#   TP_IDd_counts <- lapply(sims, function(x) {
+#     LFC <- LFCs[[x]]
+#     #countsMat <- countsData[[1]][[x]]
+#     #countsMat[LFC !=0,]$TP <- T
+#     #countsMat[LFC == 0]$TP <- F
+#   })
+#  return(TP_IDd_counts, LFCs, countsData)
+#   #names(countsData) <- sims
+#   #countsData <- rbind(countsData)
+#   #countsData <- bind_cols(countsData, .id="sim")
+# }
+
+
+```
+
+###Take in an AF and an RP distro drawn from a simulation with p.DE=0
+###Add in defined fold changes to a defined % of genes in either AF, RP, or both
+###And then T.E. changes to a selection of genes
+##ACK: big issue with this whole strategy!!!! 
+###Gene names can be duplicated, but WORSE:
+###Gene names are somewhat random. A gene in AF can have wildly different values than RP. 
+###Maybe try pairing genes by mean counts rank.
+###Welp, 1489 diff exp. genes. Time for a re-think. 
+
+```{r manual_DE_injection}
+test_simAF <- AF_sim_counts_list[[1]][[1]]
+test_simRP <- RP_sim_counts_list[[1]][[1]]
+
+inject_FC <- function(AF, RP, RNA_p.DE=0, TE_p.DE=0, RNA_TE_DEoverlap=0) {
+  #Take in AF and RP simulated data sets, with no differential expression between
+  #the two sim conditions n1 and n2
+  #Inject %RNA_p.DE of DE genes into both the AF and RP data to simulate a change in RNA abundance.
+  #Then add %TE_p.DE diff TE genes, with a specified overlap between differentially translated and transcribed genes.
+  AF <- data.frame(AF)
+  AF$meanCounts <- rowMeans(AF)
+  RP <- data.frame(RP)
+  RP$meanCounts <- rowMeans(RP)
+  AF <- AF %>% mutate(rank=rank(meanCounts, ties.method="random"))
+  RP <- RP %>% mutate(rank=rank(meanCounts, ties.method="random"))
+  # common_genes <- intersect(AF$Geneid, RP$Geneid)
+  # AF <- filter(AF, (Geneid %in% common_genes)==T)
+  # RP <- filter(RP, (Geneid %in% common_genes)==T)
+  
+  returnList <- list("AF"=AF,"RP"=RP)
+}
+
+test_inject <- inject_FC(test_simAF, test_simRP)
+af <- test_inject$AF
+rp <- test_inject$RP
+
+#take the n1 samples from RP, n2 samples from AF, and run DESeq2, to see if pairing by rank ordering creates a relatively "null" set.
+af_n2 <- dplyr::select(af, S5_n2,S6_n2,S7_n2,S8_n2, rank) %>% arrange(rank) %>% top_n(n=8000, wt=rank)
+rp_n1 <- dplyr::select(rp, S1_n1,S2_n1,S3_n1,S4_n1, rank)%>% arrange(rank) %>% top_n(n=8000, wt=rank)
+
+af_rp_rankPair_test <-merge(af_n2, rp_n1, by="rank")
+
+
+DESeq2_RNAonly_runme <- function(countsData) {
+  colData <- data.frame(condition=str_extract(colnames(countsData), regex("n.")))
+  rownames(colData) <- colnames(countsData)
+  dds <- DESeqDataSetFromMatrix(countData = countsData, colData = colData, design=~condition)
+  dds <- DESeq(dds)
+  res <- data.frame(results(dds))
+}
+sig_threshold <- 0.1
+
+af_rp_rankPair_test_DESeq2 <- DESeq2_RNAonly_runme(af_rp_rankPair_test)
+af_rp_sim_dims <- dim(filter(af_rp_rankPair_test_DESeq2, padj < sig_threshold))
+
+```
+
+
+
+
+```{r DESeq2_evaluation}
+
+test_simRNA <- AF_sim_counts_list[[1]][[1]]
+
+test <- lapply(AF_sim_counts_list$`4vs4`, DESeq2_RNAonly_runme)
+test <- bind_rows(test, .id="sim") %>% mutate(sig=case_when(
+  padj < sig_threshold ~ T,
+  padj > sig_threshold ~ F
+))
+test_MA <- ggplot(test, aes(x=log10(baseMean), y=log2FoldChange, color=sig))+JF_theme+geom_point()+facet_wrap(~sim)+scale_color_manual(values=c("black","red","grey"))
+```
+
+

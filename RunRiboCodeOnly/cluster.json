@@ -95,8 +95,8 @@
       "time" : "0-2:00:00",
       "partition" : "shared",
       "cores" : 1,
-      "error" : "logs/%j.err",
-      "output" : "logs/%j.out",
+      "error" : "logs/%j_Rmd.err",
+      "output" : "logs/%j_Rmd.out",
       "mem" : '40G'
    },
    "lengthDistros" :
@@ -105,8 +105,8 @@
       "time" : "0-10:00:00",
       "partition" : "shared",
       "cores" : 1,
-      "error" : "logs/%j.err",
-      "output" : "logs/%j.out",
+      "error" : "logs/%j_lengthDistros.err",
+      "output" : "logs/%j_lengthDistros.out",
       "mem" : '100G'
    },
    "RiboCode" :
@@ -115,8 +115,18 @@
       "time" : "0-10:00:00",
       "partition" : "shared",
       "cores" : 1,
-      "error" : "logs/%j.err",
-      "output" : "logs/%j.out",
+      "error" : "logs/%j_RiboCode.err",
+      "output" : "logs/%j_RiboCode.out",
+      "mem" : '100G'
+   },
+   "ribotricer" :
+   {
+      "account" : "jfroberg",
+      "time" : "0-10:00:00",
+      "partition" : "shared",
+      "cores" : 1,
+      "error" : "logs/%j_ribotracer.err",
+      "output" : "logs/%j_ribotracer.out",
       "mem" : '100G'
    }
    

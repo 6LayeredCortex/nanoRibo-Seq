@@ -41,7 +41,7 @@ lengthDistros:
     script: "../nanoRibo-Seq/scripts/makeLengthDistros_v2.sh"
 
 RiboCode:
-    metadata: "experimentTypesFull.csv"
+    metadata: "experimentTypesFull_single_hemi.csv"
     modules: "Anaconda/5.0.1-fasrc02"
     shell_script: "../nanoRibo-Seq/scripts/separateRPbams.sh"
     annot_gtf: "/n/macklis_lab/users/jfroberg/gtfs/mm10_RiboCode_gtfs/RiboCode_annot.gtf"
@@ -49,7 +49,7 @@ RiboCode:
     comboScript: "../nanoRibo-Seq/scripts/combineORFcounts.sh"
 
 Rmd:
-   metadata: "experimentTypesFull.csv"
+   metadata: "experimentTypesFull_single_hemi.csv"
    modules: "Pandoc/2.5 R/3.5.1-fasrc01"
    Rscript: "../nanoRibo-Seq/scripts/compile_v3.R"
    Rmd: "../nanoRibo-Seq/scripts//LengthsCountsCov_RiboWaltz_v6_nointeract.Rmd"

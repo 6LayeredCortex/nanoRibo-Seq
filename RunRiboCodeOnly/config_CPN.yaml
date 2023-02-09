@@ -13,3 +13,11 @@ RiboCode:
     annot_gtf: "/n/macklis_lab/users/jfroberg/gtfs/mm10_RiboCode_gtfs/RiboCode_annot.gtf"
     list_script: "../nanoRibo-Seq/scripts/bamFileList_script.sh"   
     comboScript: "../nanoRibo-Seq/scripts/combineORFcounts.sh"
+
+ribotricer:
+    gtf: "/n/macklis_lab/users/jfroberg/gtfs/Mus_musculus.GRCm38.95_chrNamed_headFix.gtf"
+    fasta: "/n/macklis_lab/users/jfroberg/mtrDmm10/mm10_fasta_from_ucsc_complete.fasta" 
+    start_codons: "ATG,GTG,CTG,TTG"
+    min_orf_length: 21
+    cutoff: 0.369
+    min_codons_valid_ratio: 0.1
