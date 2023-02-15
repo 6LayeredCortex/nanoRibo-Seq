@@ -27,6 +27,11 @@ library("GGally")
 library("clusterProfiler")
 library("org.Mm.eg.db")
 library("enrichplot")
+library("pROC")
+#install_github("xryanglab/xtail")
+library("xtail")
+#BiocManager::install("anota2seq")
+library("anota2seq")
 
 # #variables that are normally passed in from the Snakemake run:
 experimentTypeFile="experimentTypesFull_SubFall2021.csv"
@@ -562,6 +567,9 @@ AFvsRP_dispersionPlot <- ggplot(AF_RP_dispersions, aes(x=AF,y=RP))+JF_theme+geom
 ###Also size=1/dispersion, where dispersion is the DESeq2 dispersion. 
 ###Got 6/9949 diff exp genes at padj < 0.1 for simulated RP data, and 4/9949 for AF.
 ###Nice flat pval distros too for n1 vs n2 comparison. 
+###DiffTE seems to have nice null distros in the sim data. Thousands of diff AF vs RP genes, but just 5 diff n1 vs n2 genes, and 5 diffTE expRP.conditionn2 genes.
+###Setting the baseMean of AF and RP for sim to be baseMean (AF+RP)/2 is even better. 0 diffTE genes, 3 diff RPvsAF genes, 3 condition n1v2 genes. Totally null. 
+
 ```{r sim_setup}
 AF_fullDEseq_filt <- AF_fullDEseq %>% filter(Geneid %in% subtypeComparison_res_df$Geneid)
 RP_fullDEseq_filt <- RP_fullDEseq %>% filter(Geneid %in% subtypeComparison_res_df$Geneid)
@@ -572,12 +580,12 @@ drawFromNbinom <- function(baseMean, dispersion,Geneid, n=8) {
   return(c(Geneid, draws))
 }
 
-simFrom_fullDESeq <- function(fullDESeq, seed=1182, cond_n=4) {
+simFrom_fullDESeq <- function(fullDESeq, seed=1182, cond_n=4, expType="AF") {
   set.seed(seed)
   sim <- mapply(drawFromNbinom, fullDESeq$baseMean, fullDESeq$dispersion, fullDESeq$Geneid, cond_n*2)
   sim <- t(sim)
-  simSampNames <- c(paste(paste("S",seq(1:cond_n),sep=""),"n1",sep="_")
-    ,paste(paste("S",seq(1:cond_n),sep=""),"n2",sep="_")) 
+  simSampNames <- c(paste(paste(expType,"S",seq(1:cond_n),sep=""),"n1",sep="_")
+    ,paste(paste(expType, "S",seq(1:cond_n),sep=""),"n2",sep="_")) 
   colnames(sim) <- c("Geneid",simSampNames)
   rownames(sim) <- sim[,1]
   sim <- matrix(as.numeric(sim[,-1]), ncol=ncol(sim[,-1]), dimnames=list(rownames(sim),colnames(sim[,-1])))
@@ -594,15 +602,546 @@ DESeq2_RNAonly_runme <- function(countsData) {
 }
 sig_threshold <- 0.1
 
+###set the baseMean in both AF and RP to be the same
+common_baseMeans <- (AF_fullDEseq_filt$baseMean+RP_fullDEseq_filt$baseMean)/2
+AF_fullDE_commonMeans <- data.frame(Geneid=AF_fullDEseq_filt$Geneid, baseMean=common_baseMeans, dispersion=AF_fullDEseq_filt$dispersion )
+RP_fullDE_commonMeans <- data.frame(Geneid=RP_fullDEseq_filt$Geneid, baseMean=common_baseMeans, dispersion=RP_fullDEseq_filt$dispersion)
 
-AF_sim <- simFrom_fullDESeq(fullDESeq=AF_fullDEseq_filt, cond_n=4)
+
+AF_sim <- simFrom_fullDESeq(fullDESeq=AF_fullDE_commonMeans, cond_n=4)
 AF_sim_DEseq_res  <- DESeq2_RNAonly_runme(AF_sim)
-RP_sim <- simFrom_fullDESeq(fullDESeq=RP_fullDEseq_filt, cond_n=4)
+AF_sim2 <- simFrom_fullDESeq(fullDESeq=AF_fullDE_commonMeans, cond_n=4, seed=81523)
+RP_sim <- simFrom_fullDESeq(fullDESeq=RP_fullDE_commonMeans, cond_n=4, exp="RP")
 RP_sim_DEseq_res  <- DESeq2_RNAonly_runme(RP_sim)
+RP_sim2 <- simFrom_fullDESeq(fullDESeq=RP_fullDE_commonMeans, cond_n=4, exp="RP", seed=81523)
 
+# AF_sim <- simFrom_fullDESeq(fullDESeq=AF_fullDEseq_filt, cond_n=4)
+# AF_sim_DEseq_res  <- DESeq2_RNAonly_runme(AF_sim)
+# RP_sim <- simFrom_fullDESeq(fullDESeq=RP_fullDEseq_filt, cond_n=4, exp="RP")
+# RP_sim_DEseq_res  <- DESeq2_RNAonly_runme(RP_sim)
+
+AF_RP_concat_sim <- cbind(AF_sim, RP_sim)
+
+run_diffTE <- function(sim) {
+  #take in a sim with both labeled AF and RP samples, and run DESeq2,
+  #testing for both differences between samples and interaction term.
+  #assumes sample names begin with {exp}S_n{condition}
+  colDataSim <- data.frame(condition=str_extract(colnames(sim), regex("n.")),
+                        exp=str_extract(colnames(sim), regex("[^S]*")))
+  rownames(colDataSim) <- colnames(sim)
+  dds <- DESeqDataSetFromMatrix(countData = sim, colData = colDataSim, design=~exp*condition)
+  dds <- DESeq(dds)
+}
+
+AF_RP_sim_dds <- run_diffTE(AF_RP_concat_sim)
+```
+###fit injected fold change with a gamma distro, shape=2, rate=1.5 (might be a bit heavy tailed).
+###Test with AF_sim and RP_sim was good (baseMeans from each)! FDR <0.1 158 n1vs2 DE genes. 129 TP, 71 FN, 29 FP. 82% precision, 65% recall. 65% sensitivity, 99% specificity. 
+###With common means, got 151 TP, 41 FN, 27 FP. 75.5% sensitivity, 99% specific. 
+```{r transcriptional_change_injection}
+mRNA_lFC_distributions <- ggplot(subtypeComparison_res_df %>% filter(contrast=="mRNA"), aes(x=log2FoldChange, color=mRNA_sig))+JF_theme+geom_density()
+RP_lFC_distributions <- ggplot(subtypeComparison_res_df %>% filter(contrast=="RPF"), aes(x=log2FoldChange, color=RP_sig))+JF_theme+geom_density()
+
+mRNA_lFC_sig_means <- subtypeComparison_res_df %>% filter(contrast=="mRNA") %>%
+  group_by(mRNA_sig) %>% summarize(meanLFC=mean(log2FoldChange),medianLFC=median(log2FoldChange))
+RPF_lFC_sig_means <- subtypeComparison_res_df %>% filter(contrast=="RPF") %>%
+  group_by(RP_sig) %>% summarize(meanLFC=mean(log2FoldChange), medianLFC=median(log2FoldChange))
+
+inject_transcriptional_change <- function(AF_sim, RP_sim, n_up=100, n_down=100, gamma_shape=2, gamma_rate=1.5, minFC=0.25, seed=62189) {
+  AF <- data.frame(AF_sim, Geneid=rownames(AF_sim))
+  RP <- data.frame(RP_sim, Geneid=rownames(RP_sim))
+  AF <- AF %>% gather(key="sample",value="counts", -Geneid) %>% mutate(condition=str_extract(sample, regex("n.")))
+  RP <- RP %>% gather(key="sample",value="counts", -Geneid) %>% mutate(condition=str_extract(sample, regex("n.")))
+  
+  mRNA_TruePos_Genes <- sample(rownames(AF_sim), size=(n_up+n_down) )
+  downGenes <- mRNA_TruePos_Genes[1:n_down]
+  upGenes <- mRNA_TruePos_Genes[(n_down+1):(n_up+n_down)]
+  downFCs <- 2^(rgamma(n=n_down,shape=gamma_shape, rate=gamma_rate)+minFC)
+  upFCs <- 2^(rgamma(n=n_down,shape=gamma_shape, rate=gamma_rate)+minFC)
+  #for genes which go up, multiply n2 by FC. For genes that go down, multiply n1 by FC.
+  up <- data.frame(Geneid=upGenes, FCs=upFCs, TP="up")
+  down <- data.frame(Geneid=downGenes, FCs=downFCs, TP="down")
+  mRNA_FCs <- bind_rows(up, down)
+  
+  AF <- AF %>% left_join(mRNA_FCs, by="Geneid") %>% mutate(FCs=case_when(
+   TP=="up" & condition=="n2" ~ FCs,
+   TP=="up" & condition=="n1" ~ 1,
+   TP=="down" & condition=="n2" ~ 1,
+   TP=="down" & condition=="n1" ~ FCs,
+   is.na(TP)==T ~ 1
+  )) %>% mutate(new_counts=round(counts*FCs,0))
+  RP <- RP %>% left_join(mRNA_FCs, by="Geneid") %>% mutate(FCs=case_when(
+   TP=="up" & condition=="n2" ~ FCs,
+   TP=="up" & condition=="n1" ~ 1,
+   TP=="down" & condition=="n2" ~ 1,
+   TP=="down" & condition=="n1" ~ FCs,
+   is.na(TP)==T ~ 1
+  )) %>% mutate(new_counts=round(counts*FCs,0))
+  returnList <- list("AF"=AF,"RP"=RP)
+  #return(list(mRNA_TruePos_Genes, downGenes, upGenes))
+}
+
+AFandRP_sim_mRNA_injection <- inject_transcriptional_change(AF_sim, RP_sim, n_up=100, n_down=100)
+
+injection2DESeq_res <- function(injection_list) {
+  #Take in injected, simulated AF and RP data, run DESeq2. Return the dds and results_df for all 3 comparisons (condition, exp, interaction)
+  AF <- injection_list$AF
+  RP <- injection_list$RP
+  AF_TruePos <- AF %>% dplyr::select(Geneid, condition, TP, FCs) %>%
+    filter((TP=="down" & condition=="n1") | (TP=="up" & condition=="n2") | (TP=="up_buffered" & condition=="n2") | (TP=="down_buffered" & condition=="n1") | (TP=="up_intensified" & condition=="n2") | (TP=="down_intensified" & condition=="n1")) %>% distinct()
+  RP_TruePos <- RP %>% dplyr::select(Geneid, condition, TP, FCs) %>% filter((TP=="diffTE_down" & condition=="n1") | (TP=="diffTE_up" & condition=="n2") | (TP=="up_buffered" & condition=="n2") | (TP=="down_buffered" & condition=="n1") | (TP=="up_intensified" & condition=="n2") | (TP=="down_intensified" & condition=="n1")  ) %>% distinct()
+  #return(list(AF_TruePos, RP_TruePos))
+  AF_simulation <- AF %>% dplyr::select(Geneid, sample, new_counts) %>%
+    spread(key="sample",value="new_counts") %>% column_to_rownames("Geneid")
+  RP_simulation <- RP %>% dplyr::select(Geneid, sample, new_counts) %>%
+    spread(key="sample",value="new_counts") %>% column_to_rownames("Geneid")
+  AFandRP_simulation <- cbind(AF_simulation, RP_simulation)
+  AFandRP_dds <- run_diffTE(AFandRP_simulation)
+  AFvsRP_res <- data.frame(results(AFandRP_dds, name="exp_RP_vs_AF"), contrast="AFvsRP", Geneid=rownames(AFandRP_simulation)) %>% left_join(AF_TruePos, by="Geneid")
+  n1vs2_res <- data.frame(results(AFandRP_dds, name="condition_n2_vs_n1"), contrast="n1v2", Geneid=rownames(AFandRP_simulation)) %>% left_join(AF_TruePos, by="Geneid")
+  TE_res <- data.frame(results(AFandRP_dds, name="expRP.conditionn2"), contrast="diffTE", Geneid=rownames(AFandRP_simulation)) %>% left_join(RP_TruePos, by="Geneid")
+  full_res <- bind_rows(AFvsRP_res, n1vs2_res, TE_res) 
+  return(list("full_res"=full_res, "dds"=AFandRP_dds))
+}
+AFandRP_mRNA_injection_results <- injection2DESeq_res(AFandRP_sim_mRNA_injection)
+AFandRP_mRNA_injection_sig_OR_TP <- filter(AFandRP_mRNA_injection_results$full_res, contrast=="n1v2") %>% filter(padj < sig_threshold | is.na(TP)==F)
+```
+```{r ROC_analysis}
+
+res2pROC <- function(res_df, contrastOfInterest) {
+  #Take in a res_df, pull out the contrast of interest. Make the roc.
+  res <- res_df %>% filter(contrast==contrastOfInterest) %>% arrange(padj) %>% mutate(response=case_when(
+    padj > sig_threshold ~ 0,
+    padj < sig_threshold ~ 1
+  ), 
+  predictor=case_when(
+    is.na(TP)==T ~ 0,
+    is.na(TP)==F ~ 1
+  ))
+  theRoc <- roc(response=res$predictor, predictor=res$padj)
+}
+AFandRP_mRNA_injection_roc <- res2pROC(res_df=AFandRP_mRNA_injection_results$full_res, contrastOfInterest = "n1v2")
+
+precisionAndRecall <- function(res, theContrast, sig=0.1, TP_terms) {
+  #Take in results from a diffTE_injection+DESeq2 run, and a list of TP_terms to consider as true positives, and calculate precision and recall. 
+  res_filt <-filter(res, contrast==theContrast) %>% mutate(call=case_when(
+    (TP %in% TP_terms)==T & padj < sig ~ "TP",
+    (TP %in% TP_terms)==T & (padj > sig | is.na(padj)==T) ~ "FN",
+    (TP %in% TP_terms)==F & padj < sig ~ "FP",
+    (TP %in% TP_terms)==F & padj > sig | (padj > sig | is.na(padj)==T) ~ "TN"
+  )) %>% filter(is.na(call)==F)
+  confusion_matrix <- res_filt %>% group_by(call) %>% summarize(n=n()) 
+  precision=confusion_matrix[confusion_matrix$call=="TP",]$n/(confusion_matrix[confusion_matrix$call=="TP",]$n+confusion_matrix[confusion_matrix$call=="FP",]$n)
+  recall=confusion_matrix[confusion_matrix$call=="TP",]$n/(confusion_matrix[confusion_matrix$call=="TP",]$n+confusion_matrix[confusion_matrix$call=="FN",]$n)
+  return(list("precision"=precision, "recall"=recall, "confusion_matrix"=confusion_matrix))
+}
+
+
+PR_curve <- function(res, theContrast, TP_terms) {
+  #Take in results from a diffTE_injection+DESeq2 run, and a list of TP_terms to consider as true positives, and calculate precision and recall. 
+  res_filt <-filter(res, contrast==theContrast) %>% arrange(padj) %>%
+    mutate(TruePos=case_when((TP %in% TP_terms)==T ~ 1, (TP %in% TP_terms)==F~ 0),
+           FalsePos=case_when( (TP %in% TP_terms)==T ~ 0, (TP %in% TP_terms)==F~ 1))
+    numTruePos <- sum(res_filt$TruePos, na.rm=T)
+    res_filt <- res_filt %>% mutate(recall=cumsum(TruePos)/numTruePos, precision=cumsum(TruePos)/(cumsum(TruePos)+cumsum(FalsePos)))
+    PR_curve <- ggplot(res_filt, aes(x=recall, y=precision))+JF_theme+geom_line()
+}
+
+#test <- PR_curve(sim_mRNA4000_TE40_b40_i40_res$full_res, theContrast="diffTE", TP_terms=c("diffTE_down","diffTE_up","up_buffered","down_buffered","up_intensified","down_intensified"))
+```
+
+###Even without buffering or intensification, DESeq2 doesn't do great. 
+###Precision ~50-65%, recall=~20% for all conditions. 
+###Using a narrower gamma function for TE fold changes, but with a higher minimum.
+###When I pass these narrower FCs in for diffExp, DESeq does ok (90% precision, 58% recall, AUC=0.92)
+
+```{r diffTE_injection}
+
+inject_diffTE <- function(AF_sim, RP_sim, n_up=400, n_down=400, gamma_shape=1, gamma_rate=1.5, minFC=0.25, seed=62189, diffTE=40, buffered=0, intensified=0,TEgamma_shape=1,TEgamma_rate=2.5, TEminFC=1) {
+  set.seed(seed)
+  AF <- data.frame(AF_sim, Geneid=rownames(AF_sim))
+  RP <- data.frame(RP_sim, Geneid=rownames(RP_sim))
+  AF <- AF %>% gather(key="sample",value="counts", -Geneid) %>% mutate(condition=str_extract(sample, regex("n.")))
+  RP <- RP %>% gather(key="sample",value="counts", -Geneid) %>% mutate(condition=str_extract(sample, regex("n.")))
+#return(RP)
+Geneids <- data.frame(Geneid=rownames(AF_sim))
+ mRNA_TruePos_Genes <- sample(Geneids$Geneid, size=(n_up+n_down) )
+ mRNA_TrueNeg_Genes <- filter(Geneids, (Geneid %in% mRNA_TruePos_Genes)==F)$Geneid
+ #return(list("TP"=mRNA_TruePos_Genes,"TN"=mRNA_TrueNeg_Genes))
+  downGenes <- mRNA_TruePos_Genes[1:n_down]
+  upGenes <- mRNA_TruePos_Genes[(n_down+1):(n_up+n_down)]
+  downFCs <- 2^(rgamma(n=n_down,shape=gamma_shape, rate=gamma_rate)+minFC)
+  upFCs <- 2^(rgamma(n=n_down,shape=gamma_shape, rate=gamma_rate)+minFC)
+  #for genes which go up, multiply n2 by FC. For genes that go down, multiply n1 by FC.
+  up <- data.frame(Geneid=upGenes, FCs=upFCs, TP="up")
+  down <- data.frame(Geneid=downGenes, FCs=downFCs, TP="down")
+  mRNA_FCs <- bind_rows(up, down)
+
+###select the diffTE genes from the TrueNeg genes. diffTE_num is just diffTE/2... want half up and half down
+diffTE_num <- round(diffTE/2)
+diffTE_genes <- sample(mRNA_TrueNeg_Genes, size=diffTE)
+diffTE_downGenes <-diffTE_genes[1:diffTE_num ]
+diffTE_upGenes <- diffTE_genes[(diffTE_num+1):(diffTE)]
+diffTE_downFCs <- 2^(rgamma(n=diffTE_num,shape=TEgamma_shape, rate=TEgamma_rate)+TEminFC)
+diffTE_upFCs <- 2^(rgamma(n=diffTE_num,shape=TEgamma_shape, rate=TEgamma_rate)+TEminFC)
+diffTE_up <- data.frame(Geneid=diffTE_upGenes, FCs=diffTE_upFCs, TP="diffTE_up")
+diffTE_down <- data.frame(Geneid=diffTE_downGenes, FCs=diffTE_downFCs, TP="diffTE_down")
+
+##add in genes to be intensified or buffered
+buffedIntensed_Geneids <- sample(mRNA_TruePos_Genes, size=(buffered+intensified))
+buffed_genes <- buffedIntensed_Geneids[1:buffered]
+intensed_genes <- buffedIntensed_Geneids[(buffered+1):(buffered+intensified)]
+# buffed_FCs <- 2^(rgamma(n=buffered,shape=gamma_shape, rate=gamma_rate)+minFC)
+# intensed_FCs <- 2^(rgamma(n=buffered,shape=gamma_shape, rate=gamma_rate)+minFC)
+
+#label which genes in the mRNA_FCs are buffered (their fold change stays the same in the AF/mRNA data)
+
+mRNA_FCs <- mRNA_FCs %>%
+  mutate(TP=case_when(
+    Geneid %in% buffed_genes & TP=="up" ~ "up_buffered",
+    Geneid %in% buffed_genes & TP=="down" ~ "down_buffered",
+    Geneid %in% intensed_genes & TP=="up" ~ "up_intensified",
+    Geneid %in% intensed_genes & TP=="down" ~ "down_intensified",
+    (Geneid %in% buffed_genes)==F & (Geneid %in% intensed_genes)==F ~ TP
+  ))
+
+#return(mRNA_FCs)
+#multiply the mRNA fold changes by the buffed or intensed fold changes in the RP samples. 
+#Draw a random point from the gamma distribution to get the buffering/inte sifying fold change. 
+#up_buffered means mRNA goes up, TE goes down, so RP=FC/gamma in n2 (denominator). down buffered means mRNA goes down, so RP=FC/gamma in n1. 
+#intensified up means RNA and RP both go up in n2, intensified 2 means both RNA and RP are higher in n1 than n2. 
+
+
+RP_FCs <- mRNA_FCs
+
+RP_FCs <- bind_rows(RP_FCs, diffTE_up, diffTE_down)
+mRNA_FCs <- bind_rows(mRNA_FCs, diffTE_up, diffTE_down)
+  AF <- AF %>% left_join(mRNA_FCs, by="Geneid") %>% mutate(FCs=case_when(
+   TP=="up" & condition=="n2" ~ FCs,
+   TP=="up" & condition=="n1" ~ 1,
+   TP=="down" & condition=="n2" ~ 1,
+   TP=="down" & condition=="n1" ~ FCs,
+   TP=="up_buffered" & condition=="n2" ~ FCs,
+   TP=="up_buffered" & condition=="n1" ~ 1,
+   TP=="down_buffered" & condition=="n2" ~ 1,
+   TP=="down_buffered" & condition=="n1" ~ FCs,
+   TP=="up_intensified" & condition=="n2" ~ FCs,
+   TP=="up_intensified" & condition=="n1" ~ 1,
+   TP=="down_intensified" & condition=="n2" ~ 1,
+   TP=="down_intensified" & condition=="n1" ~ FCs,
+   is.na(TP)==T ~ 1,
+   (TP %in% c("diffTE_up","diffTE_down"))==T ~ 1
+  )) %>% mutate(new_counts=round(counts*FCs,0))
+  RP <- RP %>% left_join(RP_FCs, by="Geneid") %>% mutate(FCs=case_when(
+   TP=="diffTE_up" & condition=="n2" ~ FCs,
+   TP=="diffTE_up" & condition=="n1" ~ 1,
+   TP=="diffTE_down" & condition=="n2" ~ 1,
+   TP=="diffTE_down" & condition=="n1" ~ FCs,
+   TP=="up" & condition=="n2" ~ FCs,
+   TP=="up" & condition=="n1" ~ 1,
+   TP=="down" & condition=="n2" ~ 1,
+   TP=="down" & condition=="n1" ~ FCs,
+   TP=="up_buffered" & condition=="n1" ~ 1,
+   TP=="up_buffered" & condition=="n2" ~ FCs/(2^(rgamma(n=1,shape=TEgamma_shape, rate=TEgamma_rate)+TEminFC)),
+   TP=="down_buffered" & condition=="n1" ~ FCs/(2^(rgamma(n=1,shape=TEgamma_shape, rate=TEgamma_rate)+TEminFC)),
+   TP=="down_buffered" & condition=="n2" ~ 1,
+   TP=="up_intensified" & condition=="n1" ~ 1 ,
+   TP=="up_intensified" & condition=="n2" ~ FCs*(2^(rgamma(n=1,shape=TEgamma_shape, rate=TEgamma_rate)+TEminFC)),
+   TP=="down_intensified" & condition=="n1" ~ FCs*(2^(rgamma(n=1,shape=TEgamma_shape, rate=TEgamma_rate)+TEminFC)),
+   TP=="down_intensified" & condition=="n2" ~ 1,
+   is.na(TP)==T ~ 1
+  )) %>% mutate(new_counts=round(counts*FCs,0))
+  returnList <- list("AF"=AF,"RP"=RP)
+}
+
+#Buffering+Intensification, 800 exp genes, 120 total diff genes
+sim_mRNA800_TE40_b40_i40 <- inject_diffTE(AF_sim=AF_sim, RP_sim=RP_sim, diffTE=40, buffered=40, intensified=40)
+sim_mRNA800_TE40_b40_i40_res <- injection2DESeq_res(sim_mRNA800_TE40_b40_i40)
+sim_mRNA800_TE40_b40_i40_PR <- precisionAndRecall(sim_mRNA800_TE40_b40_i40_res$full_res, theContrast="diffTE", TP_terms=c("diffTE_down","diffTE_up","up_buffered","down_buffered","up_intensified","down_intensified"))
+sim_mRNA800_TE40_b40_i40_PR_curve <- PR_curve(sim_mRNA800_TE40_b40_i40_res$full_res, theContrast="diffTE", TP_terms=c("diffTE_down","diffTE_up","up_buffered","down_buffered","up_intensified","down_intensified"))
+sim_mRNA800_TE40_b40_i40_roc <- res2pROC(sim_mRNA800_TE40_b40_i40_res$full_res, contrastOfInterest = "diffTE")
+
+sim2_mRNA800_TE40_b40_i40 <- inject_diffTE(AF_sim=AF_sim2, RP_sim=RP_sim2, diffTE=40, buffered=40, intensified=40, seed=81523)
+sim2_mRNA800_TE40_b40_i40_res <- injection2DESeq_res(sim2_mRNA800_TE40_b40_i40)
+sim2_mRNA800_TE40_b40_i40_PR <- precisionAndRecall(sim2_mRNA800_TE40_b40_i40_res$full_res, theContrast="diffTE", TP_terms=c("diffTE_down","diffTE_up","up_buffered","down_buffered","up_intensified","down_intensified"))
+sim2_mRNA800_TE40_b40_i40_PR_curve <- PR_curve(sim2_mRNA800_TE40_b40_i40_res$full_res, theContrast="diffTE", TP_terms=c("diffTE_down","diffTE_up","up_buffered","down_buffered","up_intensified","down_intensified"))
+sim2_mRNA800_TE40_b40_i40_roc <- res2pROC(sim2_mRNA800_TE40_b40_i40_res$full_res, contrastOfInterest = "diffTE")
+
+#Buffering+Intensification, 4000 exp genes, 120 total diff genes
+sim_mRNA4000_TE40_b40_i40 <- inject_diffTE(AF_sim=AF_sim, RP_sim=RP_sim, diffTE=40, buffered=40, intensified=40, n_up=2000, n_down=2000)
+sim_mRNA4000_TE40_b40_i40_res <- injection2DESeq_res(sim_mRNA4000_TE40_b40_i40)
+sim_mRNA4000_TE40_b40_i40_PR <- precisionAndRecall(sim_mRNA4000_TE40_b40_i40_res$full_res, theContrast="diffTE", TP_terms=c("diffTE_down","diffTE_up","up_buffered","down_buffered","up_intensified","down_intensified"))
+sim_mRNA4000_TE40_b40_i40_PR_curve <- PR_curve(sim_mRNA4000_TE40_b40_i40_res$full_res, theContrast="diffTE", TP_terms=c("diffTE_down","diffTE_up","up_buffered","down_buffered","up_intensified","down_intensified"))
+sim_mRNA4000_TE40_b40_i40_roc <- res2pROC(sim_mRNA4000_TE40_b40_i40_res$full_res, contrastOfInterest = "diffTE")
+
+sim2_mRNA4000_TE40_b40_i40 <- inject_diffTE(AF_sim=AF_sim2, RP_sim=RP_sim2, diffTE=40, buffered=40, intensified=40, n_up=2000, n_down=2000, seed=81523)
+sim2_mRNA4000_TE40_b40_i40_res <- injection2DESeq_res(sim2_mRNA4000_TE40_b40_i40)
+sim2_mRNA4000_TE40_b40_i40_PR <- precisionAndRecall(sim2_mRNA4000_TE40_b40_i40_res$full_res, theContrast="diffTE", TP_terms=c("diffTE_down","diffTE_up","up_buffered","down_buffered","up_intensified","down_intensified"))
+sim2_mRNA4000_TE40_b40_i40_PR_curve <- PR_curve(sim2_mRNA4000_TE40_b40_i40_res$full_res, theContrast="diffTE", TP_terms=c("diffTE_down","diffTE_up","up_buffered","down_buffered","up_intensified","down_intensified"))
+sim2_mRNA4000_TE40_b40_i40_roc <- res2pROC(sim2_mRNA4000_TE40_b40_i40_res$full_res, contrastOfInterest = "diffTE")
+
+# 4000 exp genes, 10 total diff genes
+sim_mRNA4000_TE10_b0_i0 <- inject_diffTE(AF_sim=AF_sim, RP_sim=RP_sim, diffTE=10, buffered=0, intensified=0, n_up=2000, n_down=2000)
+sim_mRNA4000_TE10_b0_i0_res <- injection2DESeq_res(sim_mRNA4000_TE10_b0_i0)
+
+
+#No buffering or intensification, 800 diffExp, 40 diffTE
+sim_mRNA800_TE40_b0_i0 <- inject_diffTE(AF_sim=AF_sim, RP_sim=RP_sim)
+sim_mRNA800_TE40_b0_i0_res <- injection2DESeq_res(sim_mRNA800_TE40_b0_i0)
+sim_mRNA800_TE40_b0_i0_PR <- precisionAndRecall(sim_mRNA800_TE40_b0_i0_res$full_res, theContrast="diffTE", TP_terms=c("diffTE_down","diffTE_up"))
+sim_mRNA800_TE40_b0_i0_roc <- res2pROC(res_df = sim_mRNA800_TE40_b0_i0_res$full_res, contrastOfInterest = "diffTE")
+
+###See how well difExp works with the narrower gamma distro used for diffTE
+###supplied to generate mRNA fold changes.
+
+sim_mRNA800_TE40_b0_i0_gr1_gs2.5 <- inject_diffTE(AF_sim=AF_sim, RP_sim=RP_sim, gamma_shape = 1, gamma_rate=2.5, minFC=0.5)
+sim_mRNA800_TE40_b0_i0_gr1_gs2.5_res <- injection2DESeq_res(sim_mRNA800_TE40_b0_i0_gr1_gs2.5)
+sim_mRNA800_TE40_b0_i0_gr1_gs2.5_mRNA_PR <- precisionAndRecall(sim_mRNA800_TE40_b0_i0_gr1_gs2.5_res$full_res, theContrast = "n1v2", TP_terms = c("up","down"))
+sim_mRNA800_TE40_b0_i0_gr1_gs2.5_mRNA_PR_curve <- PR_curve(sim_mRNA800_TE40_b0_i0_gr1_gs2.5_res$full_res, theContrast = "n1v2", TP_terms = c("up","down"))
+sim_mRNA800_TE40_b0_i0_gr1_gs2.5_mRNA_pROC <- res2pROC(sim_mRNA800_TE40_b0_i0_gr1_gs2.5_res$full_res, contrast="n1v2")
+
+#no diffTE or Exp
+sim_mRNA200_TE10_b0_i0<- inject_diffTE(AF_sim=AF_sim, RP_sim=RP_sim, diffTE=10, buffered=0, intensified=0, n_up=100, n_down=100)
+sim_mRNA0_TE0_b0_i0_res <- injection2DESeq_res(sim_mRNA200_TE10_b0_i0)
+#sim_mRNA0_TE0_b0_i0_mRNA_PR <- precisionAndRecall(sim_mRNA0_TE0_b0_i0$full_res, theContrast = "n1v2", TP_terms = c("up","down"))
+#sim_mRNA0_TE0_b0_i0 <- res2pROC(sim_mRNA0_TE0_b0_i0$full_res, contrast="n1v2")
+
+plot_diffTE_from_injection <- function(res) {
+  res_filt <- res %>% filter(contrast=="n1v2" | contrast=="diffTE") 
+    MAplot <- ggplot(res_filt, aes(x=log10(baseMean),y=log2FoldChange,color=is.na(TP)))+JF_theme+facet_wrap(~contrast)+geom_point(size=0.2, alpha=0.5)+theme(legend.position = "top")+scale_color_manual(values=c("red","black"))
+}
+
+sim_mRNA4000_TE40_b40_i40_injection_MAplots <- plot_diffTE_from_injection(sim_mRNA4000_TE40_b40_i40_res$full_res)
+sim2_mRNA4000_TE40_b40_i40_injection_MAplots <- plot_diffTE_from_injection(sim2_mRNA4000_TE40_b40_i40_res$full_res)
+
+sim_mRNA800_TE40_b40_i40_injection_MAplots <- plot_diffTE_from_injection(sim_mRNA800_TE40_b40_i40_res$full_res)+ggtitle("sim1, mRNA800, TE 40, buffered 40, intensified 40 MAplot")
+sim2_mRNA800_TE40_b40_i40_injection_MAplots <- plot_diffTE_from_injection(sim2_mRNA800_TE40_b40_i40_res$full_res)+ggtitle("sim2, mRNA4000, TE 40, buffered 40, intensified 40 P vs R")
+
+sim_mRNA4000_TE40_b40_i40_injection_MAplots <- plot_diffTE_from_injection(sim_mRNA4000_TE40_b40_i40_res$full_res)+ggtitle("sim1, mRNA4000, TE 40, buffered 40, intensified 40 MAplot")
+sim2_mRNA4000_TE40_b40_i40_injection_MAplots <- plot_diffTE_from_injection(sim2_mRNA4000_TE40_b40_i40_res$full_res)+ggtitle("sim2, mRNA4000, TE 40, buffered 40, intensified 40 P vs R")
+```
+
+```{r xtail_on_sim}
+
+injection2xtail <- function(injection_list, bins=10000, ci=0.90, outName) {
+  AF <- injection_list$AF
+  RP <- injection_list$RP
+  AF_TruePos <- AF %>% dplyr::select(Geneid, condition, TP, FCs) %>%
+    filter((TP=="down" & condition=="n1") | (TP=="up" & condition=="n2") | (TP=="up_buffered" & condition=="n2") | (TP=="down_buffered" & condition=="n1") | (TP=="up_intensified" & condition=="n2") | (TP=="down_intensified" & condition=="n1")) %>% distinct()
+  RP_TruePos <- RP %>% dplyr::select(Geneid, condition, TP, FCs) %>% filter((TP=="diffTE_down" & condition=="n1") | (TP=="diffTE_up" & condition=="n2") | (TP=="up_buffered" & condition=="n2") | (TP=="down_buffered" & condition=="n1") | (TP=="up_intensified" & condition=="n2") | (TP=="down_intensified" & condition=="n1")  ) %>% distinct()
+  #return(list(AF_TruePos, RP_TruePos))
+  AF_simulation <- AF %>% dplyr::select(Geneid, sample, new_counts) %>%
+    spread(key="sample",value="new_counts") %>% column_to_rownames("Geneid")
+  RP_simulation <- RP %>% dplyr::select(Geneid, sample, new_counts) %>%
+    spread(key="sample",value="new_counts") %>% column_to_rownames("Geneid")
+   AF_TruePos <- AF %>% dplyr::select(Geneid, condition, TP, FCs) %>%
+    filter((TP=="down" & condition=="n1") | (TP=="up" & condition=="n2") | (TP=="up_buffered" & condition=="n2") | (TP=="down_buffered" & condition=="n1") | (TP=="up_intensified" & condition=="n2") | (TP=="down_intensified" & condition=="n1")) %>% distinct()
+  RP_TruePos <- RP %>% dplyr::select(Geneid, condition, TP, FCs) %>% filter((TP=="diffTE_down" & condition=="n1") | (TP=="diffTE_up" & condition=="n2") | (TP=="up_buffered" & condition=="n2") | (TP=="down_buffered" & condition=="n1") | (TP=="up_intensified" & condition=="n2") | (TP=="down_intensified" & condition=="n1")  ) %>% distinct()
+  #return(list(AF_TruePos, RP_TruePos))
+  AF_simulation <- AF %>% dplyr::select(Geneid, sample, new_counts) %>%
+    spread(key="sample",value="new_counts") %>% column_to_rownames("Geneid")
+  RP_simulation <- RP %>% dplyr::select(Geneid, sample, new_counts) %>%
+    spread(key="sample",value="new_counts") %>% column_to_rownames("Geneid")
+  condition <- str_extract(colnames(AF_simulation), regex("n."))
+  xtail_res <- xtail(mrna=AF_simulation,rpf=RP_simulation, condition = condition, bins=bins, ci=ci)
+  xtail_table <- data.frame(resultsTable(xtail_res), contrast="diffTE")
+  xtail_table <- data.frame(xtail_table, Geneid=rownames(xtail_table)) %>% left_join(RP_TruePos, by="Geneid") %>% mutate(padj=pvalue.adjust, pvalue=pvalue_final)
+  write.csv(xtail_table, file=outName, quote=F)
+  return(xtail_table)
+}
+
+#Xtail is slow. Very slow. If the file exists, don't run it again.
+if (file.exists("sim_mRNA800_TE40_b40_i40_xtail.csv")==F) {
+sim_mRNA800_TE40_b40_i40_xtail <- injection2xtail(sim_mRNA800_TE40_b40_i40, outName = "sim_mRNA800_TE40_b40_i40_xtail.csv")
+} else {
+  sim_mRNA800_TE40_b40_i40_xtail <- read.csv("sim_mRNA800_TE40_b40_i40_xtail.csv")
+}
+if (file.exists("sim_mRNA4000_TE40_b40_i40_xtail.csv")==F) {
+sim_mRNA4000_TE40_b40_i40_xtail <- injection2xtail(sim_mRNA4000_TE40_b40_i40, outName = "sim_mRNA4000_TE40_b40_i40_xtail.csv")
+} else {
+  sim_mRNA4000_TE40_b40_i40_xtail <- read.csv("sim_mRNA4000_TE40_b40_i40_xtail.csv")
+}
+
+sim_mRNA800_TE40_b40_i40_xtail <- sim_mRNA800_TE40_b40_i40_xtail %>% mutate(pvalue=pvalue_final)
+sim_mRNA800_TE40_b40_i40_xtail_PR <- precisionAndRecall(sim_mRNA800_TE40_b40_i40_xtail, theContrast = "diffTE", TP_terms=c("diffTE_down","diffTE_up","up_buffered","down_buffered","up_intensified","down_intensified"))
+sim_mRNA800_TE40_b40_i40_xtail_PR_curve <- PR_curve(sim_mRNA800_TE40_b40_i40_xtail, theContrast = "diffTE", TP_terms=c("diffTE_down","diffTE_up","up_buffered","down_buffered","up_intensified","down_intensified"))
+sim_mRNA800_TE40_b40_i40_xtail_roc <- res2pROC(sim_mRNA800_TE40_b40_i40_xtail, contrast="diffTE")
+
+sim_mRNA4000_TE40_b40_i40_xtail <- sim_mRNA4000_TE40_b40_i40_xtail %>% mutate(pvalue=pvalue_final)
+sim_mRNA4000_TE40_b40_i40_xtail_PR <- precisionAndRecall(sim_mRNA4000_TE40_b40_i40_xtail, theContrast = "diffTE", TP_terms=c("diffTE_down","diffTE_up","up_buffered","down_buffered","up_intensified","down_intensified"))
+sim_mRNA4000_TE40_b40_i40_xtail_PR_curve <- PR_curve(sim_mRNA4000_TE40_b40_i40_xtail, theContrast = "diffTE", TP_terms=c("diffTE_down","diffTE_up","up_buffered","down_buffered","up_intensified","down_intensified"))
+sim_mRNA4000_TE40_b40_i40_xtail_roc <- res2pROC(sim_mRNA4000_TE40_b40_i40_xtail, contrast="diffTE")
+
+#Xtail is slow. Very slow. If the file exists, don't run it again.
+if (file.exists("sim2_mRNA800_TE40_b40_i40_xtail.csv")==F) {
+sim2_mRNA800_TE40_b40_i40_xtail <- injection2xtail(sim2_mRNA800_TE40_b40_i40, outName = "sim2_mRNA800_TE40_b40_i40_xtail.csv")
+} else {
+  sim2_mRNA800_TE40_b40_i40_xtail <- read.csv("sim2_mRNA800_TE40_b40_i40_xtail.csv")
+}
+if (file.exists("sim2_mRNA4000_TE40_b40_i40_xtail.csv")==F) {
+sim2_mRNA4000_TE40_b40_i40_xtail <- injection2xtail(sim2_mRNA4000_TE40_b40_i40, outName = "sim2_mRNA4000_TE40_b40_i40_xtail.csv")
+} else {
+  sim2_mRNA4000_TE40_b40_i40_xtail <- read.csv("sim2_mRNA4000_TE40_b40_i40_xtail.csv")
+}
+
+sim2_mRNA800_TE40_b40_i40_xtail <- sim2_mRNA800_TE40_b40_i40_xtail %>% mutate(pvalue=pvalue_final)
+sim2_mRNA800_TE40_b40_i40_xtail_PR <- precisionAndRecall(sim2_mRNA800_TE40_b40_i40_xtail, theContrast = "diffTE", TP_terms=c("diffTE_down","diffTE_up","up_buffered","down_buffered","up_intensified","down_intensified"))
+sim2_mRNA800_TE40_b40_i40_xtail_PR_curve <- PR_curve(sim2_mRNA800_TE40_b40_i40_xtail, theContrast = "diffTE", TP_terms=c("diffTE_down","diffTE_up","up_buffered","down_buffered","up_intensified","down_intensified"))
+sim2_mRNA800_TE40_b40_i40_xtail_roc <- res2pROC(sim2_mRNA800_TE40_b40_i40_xtail, contrast="diffTE")
+
+sim2_mRNA4000_TE40_b40_i40_xtail <- sim2_mRNA4000_TE40_b40_i40_xtail %>% mutate(pvalue=pvalue_final)
+sim2_mRNA4000_TE40_b40_i40_xtail_PR <- precisionAndRecall(sim2_mRNA4000_TE40_b40_i40_xtail, theContrast = "diffTE", TP_terms=c("diffTE_down","diffTE_up","up_buffered","down_buffered","up_intensified","down_intensified"))
+sim2_mRNA4000_TE40_b40_i40_xtail_PR_curve <- PR_curve(sim2_mRNA4000_TE40_b40_i40_xtail, theContrast = "diffTE", TP_terms=c("diffTE_down","diffTE_up","up_buffered","down_buffered","up_intensified","down_intensified"))
+sim2_mRNA4000_TE40_b40_i40_xtail_roc <- res2pROC(sim2_mRNA4000_TE40_b40_i40_xtail, contrast="diffTE")
 
 ```
 
+```{r anota2seq}
+injection2anota2seq <- function(injection_list) {
+    AF <- injection_list$AF
+  RP <- injection_list$RP
+  AF_TruePos <- AF %>% dplyr::select(Geneid, condition, TP, FCs) %>%
+    filter((TP=="down" & condition=="n1") | (TP=="up" & condition=="n2") | (TP=="up_buffered" & condition=="n2") | (TP=="down_buffered" & condition=="n1") | (TP=="up_intensified" & condition=="n2") | (TP=="down_intensified" & condition=="n1")) %>% distinct()
+  RP_TruePos <- RP %>% dplyr::select(Geneid, condition, TP, FCs) %>% filter((TP=="diffTE_down" & condition=="n1") | (TP=="diffTE_up" & condition=="n2") | (TP=="up_buffered" & condition=="n2") | (TP=="down_buffered" & condition=="n1") | (TP=="up_intensified" & condition=="n2") | (TP=="down_intensified" & condition=="n1")  ) %>% distinct()
+  #return(list(AF_TruePos, RP_TruePos))
+  AF_simulation <- AF %>% dplyr::select(Geneid, sample, new_counts) %>%
+    spread(key="sample",value="new_counts") %>% column_to_rownames("Geneid")
+  RP_simulation <- RP %>% dplyr::select(Geneid, sample, new_counts) %>%
+    spread(key="sample",value="new_counts") %>% column_to_rownames("Geneid")
+   AF_TruePos <- AF %>% dplyr::select(Geneid, condition, TP, FCs) %>%
+    filter((TP=="down" & condition=="n1") | (TP=="up" & condition=="n2") | (TP=="up_buffered" & condition=="n2") | (TP=="down_buffered" & condition=="n1") | (TP=="up_intensified" & condition=="n2") | (TP=="down_intensified" & condition=="n1")) %>% distinct()
+  RP_TruePos <- RP %>% dplyr::select(Geneid, condition, TP, FCs) %>% filter((TP=="diffTE_down" & condition=="n1") | (TP=="diffTE_up" & condition=="n2") | (TP=="up_buffered" & condition=="n2") | (TP=="down_buffered" & condition=="n1") | (TP=="up_intensified" & condition=="n2") | (TP=="down_intensified" & condition=="n1")  ) %>% distinct()
+  #return(list(AF_TruePos, RP_TruePos))
+  AF_simulation <- AF %>% dplyr::select(Geneid, sample, new_counts) %>%
+    spread(key="sample",value="new_counts") %>% column_to_rownames("Geneid")
+  RP_simulation <- RP %>% dplyr::select(Geneid, sample, new_counts) %>%
+    spread(key="sample",value="new_counts") %>% column_to_rownames("Geneid")
+  phenoVec <- str_extract(colnames(AF_simulation), regex("n."))
+  anotaDataSet <- anota2seqDataSetFromMatrix(
+    dataP=RP_simulation,
+    dataT = AF_simulation,
+    phenoVec = phenoVec,
+    dataType="RNAseq",
+    normalize= T, transformation = "TMM-log2"
+  )
+  #Set more realistic thresholds here. Bigger slopes allowed, smaller padj
+  anotaDataSet <- anota2seqRun(anotaDataSet, thresholds=list(
+    "minSlopeTranslation"=-5,
+    "maxSlopeTranslation"=5,
+    "minSlopeBuffering"=-5,
+    "maxSlopeBuffering"=5,
+    "maxPAdj"=0.1
+  ))
+  return(anotaDataSet)
+}
+
+sim_mRNA200_TE10_b0_i0_anota <- injection2anota2seq(sim_mRNA200_TE10_b0_i0)
+sim_mRNA800_TE40_b40_i40_anota <- injection2anota2seq(sim_mRNA800_TE40_b40_i40)
+sim_mRNA4000_TE40_b40_i40_anota <- injection2anota2seq(sim_mRNA4000_TE40_b40_i40)
+sim_mRNA4000_TE10_b0_i0_anota <- injection2anota2seq(sim_mRNA4000_TE10_b0_i0)
+sim2_mRNA800_TE40_b40_i40_anota <- injection2anota2seq(sim2_mRNA800_TE40_b40_i40)
+sim2_mRNA4000_TE40_b40_i40_anota <- injection2anota2seq(sim2_mRNA4000_TE40_b40_i40)
+
+
+anota2res2df <- function(anota2res, contrast="diffTE", injection_list) {
+  #pull out the table from anota2 results
+  RP <- injection_list$RP
+  RP_TruePos <- RP %>% dplyr::select(Geneid, condition, TP, FCs) %>%   filter((TP=="diffTE_down" & condition=="n1") | (TP=="diffTE_up" & condition=="n2") | (TP=="up_buffered" & condition=="n2") | (TP=="down_buffered" & condition=="n1") | (TP=="up_intensified" & condition=="n2") | (TP=="down_intensified" & condition=="n1")  ) %>% distinct()
+  res_df <- anota2seqGetOutput(anota2res, output="singleDf", selContrast = 1)
+  res_df <- data.frame(res_df, contrast="diffTE")
+  res_df <- res_df %>% mutate(Geneid=identifier, padj=translation.apvRvmPAdj, obs_lFC=translation.apvEff) %>% left_join(RP_TruePos, by="Geneid") %>% mutate(exp_lFC=log2(FCs))
+}
+
+sim_mRNA4000_TE40_b40_i40_anota_res <- anota2res2df(anota2res=sim_mRNA4000_TE40_b40_i40_anota, injection_list=sim_mRNA4000_TE40_b40_i40)
+sim_mRNA4000_TE40_b40_i40_anota_PR <- precisionAndRecall(sim_mRNA4000_TE40_b40_i40_anota_res, theContrast = "diffTE", TP_terms = c("diffTE_down","diffTE_up","up_buffered","down_buffered","up_intensified","down_intensified"))
+sim_mRNA4000_TE40_b40_i40_anota_PR_curve <- PR_curve(sim_mRNA4000_TE40_b40_i40_anota_res, theContrast = "diffTE", TP_terms = c("diffTE_down","diffTE_up","up_buffered","down_buffered","up_intensified","down_intensified"))
+sim_mRNA4000_TE40_b40_i40_anota_roc <- res2pROC(sim_mRNA4000_TE40_b40_i40_anota_res, contrastOfInterest = "diffTE") 
+
+sim_mRNA800_TE40_b40_i40_anota_res <- anota2res2df(anota2res=sim_mRNA800_TE40_b40_i40_anota, injection_list=sim_mRNA800_TE40_b40_i40)
+sim_mRNA800_TE40_b40_i40_anota_PR <- precisionAndRecall(sim_mRNA800_TE40_b40_i40_anota_res, theContrast = "diffTE", TP_terms = c("diffTE_down","diffTE_up","up_buffered","down_buffered","up_intensified","down_intensified"))
+sim_mRNA800_TE40_b40_i40_anota_PR_curve <- PR_curve(sim_mRNA800_TE40_b40_i40_anota_res, theContrast = "diffTE", TP_terms = c("diffTE_down","diffTE_up","up_buffered","down_buffered","up_intensified","down_intensified"))
+sim_mRNA800_TE40_b40_i40_anota_roc <- res2pROC(sim_mRNA800_TE40_b40_i40_anota_res, contrastOfInterest = "diffTE") 
+
+sim2_mRNA4000_TE40_b40_i40_anota_res <- anota2res2df(anota2res=sim2_mRNA4000_TE40_b40_i40_anota, injection_list=sim2_mRNA4000_TE40_b40_i40)
+sim2_mRNA4000_TE40_b40_i40_anota_PR <- precisionAndRecall(sim2_mRNA4000_TE40_b40_i40_anota_res, theContrast = "diffTE", TP_terms = c("diffTE_down","diffTE_up","up_buffered","down_buffered","up_intensified","down_intensified"))
+sim2_mRNA4000_TE40_b40_i40_anota_PR_curve <- PR_curve(sim2_mRNA4000_TE40_b40_i40_anota_res, theContrast = "diffTE", TP_terms = c("diffTE_down","diffTE_up","up_buffered","down_buffered","up_intensified","down_intensified"))
+sim2_mRNA4000_TE40_b40_i40_anota_roc <- res2pROC(sim2_mRNA4000_TE40_b40_i40_anota_res, contrastOfInterest = "diffTE") 
+
+sim2_mRNA800_TE40_b40_i40_anota_res <- anota2res2df(anota2res=sim2_mRNA800_TE40_b40_i40_anota, injection_list=sim2_mRNA800_TE40_b40_i40)
+sim2_mRNA800_TE40_b40_i40_anota_PR <- precisionAndRecall(sim2_mRNA800_TE40_b40_i40_anota_res, theContrast = "diffTE", TP_terms = c("diffTE_down","diffTE_up","up_buffered","down_buffered","up_intensified","down_intensified"))
+sim2_mRNA800_TE40_b40_i40_anota_PR_curve <- PR_curve(sim2_mRNA800_TE40_b40_i40_anota_res, theContrast = "diffTE", TP_terms = c("diffTE_down","diffTE_up","up_buffered","down_buffered","up_intensified","down_intensified"))
+sim2_mRNA800_TE40_b40_i40_anota_roc <- res2pROC(sim2_mRNA800_TE40_b40_i40_anota_res, contrastOfInterest = "diffTE") 
+```
+
+```{r compareROCsAndConfusions}
+
+mRNA4000_40TE_40b_40i_ROC_list=list(
+  "DESeq2"=sim_mRNA4000_TE40_b40_i40_roc,
+  "xtail"=sim_mRNA4000_TE40_b40_i40_xtail_roc,
+  "anota"=sim_mRNA4000_TE40_b40_i40_anota_roc)
+mRNA800_40TE_40b_40i_ROC_list=list(
+  "DESeq2"=sim_mRNA800_TE40_b40_i40_roc,
+  "xtail"=sim_mRNA800_TE40_b40_i40_xtail_roc,
+  "anota"=sim_mRNA800_TE40_b40_i40_anota_roc)
+
+mRNA4000_40TE_40b_40i_PR_list=list(
+  "DESeq2"=sim_mRNA4000_TE40_b40_i40_PR_curve,
+  "xtail"=sim_mRNA4000_TE40_b40_i40_xtail_PR_curve,
+  "anota2seq"=sim_mRNA4000_TE40_b40_i40_anota_PR_curve
+)
+mRNA800_40TE_40b_40i_PR_list=list(
+  "DESeq2"=sim_mRNA800_TE40_b40_i40_PR_curve,
+  "xtail"=sim_mRNA800_TE40_b40_i40_xtail_PR_curve,
+  "anota2seq"=sim_mRNA800_TE40_b40_i40_anota_PR_curve
+)
+
+sim2_mRNA4000_40TE_40b_40i_PR_list=list(
+  "DESeq2"=sim2_mRNA4000_TE40_b40_i40_PR_curve,
+  "xtail"=sim2_mRNA4000_TE40_b40_i40_xtail_PR_curve,
+  "anota2seq"=sim2_mRNA4000_TE40_b40_i40_anota_PR_curve
+)
+sim2_mRNA800_40TE_40b_40i_PR_list=list(
+  "DESeq2"=sim2_mRNA800_TE40_b40_i40_PR_curve,
+  "xtail"=sim2_mRNA800_TE40_b40_i40_xtail_PR_curve,
+  "anota2seq"=sim2_mRNA800_TE40_b40_i40_anota_PR_curve
+)
+
+compare_ROCs <- function(ROClist) {
+  roc_dfs <- lapply(ROClist, function(x){
+    ROC <- x
+    sensitivities <- ROC$sensitivities
+    specificities <- ROC$specificities
+    auc=ROC$auc
+    df <- data.frame(sensitivity=sensitivities, specificity=specificities)
+  }) %>% bind_rows(.id="ROC_name")
+}
+
+compare_PR_curves <- function(PRlist) {
+  PR_df <- lapply(PRlist, function(x){
+   PR <- x$data
+  df <- data.frame(precision=PR$precision,recall=PR$recall)
+  }) %>% bind_rows(.id="PR_name")
+  PR_comp_plot <- ggplot(PR_df, aes(x=recall,y=precision, color=PR_name))+JF_theme+geom_line()
+}
+
+mRNA4000_40TE_40b_40i_ROC_df <- compare_ROCs(mRNA4000_40TE_40b_40i_ROC_list)
+mRNA4000_40TE_40b_40i_PR_comp_plot <- compare_PR_curves(mRNA4000_40TE_40b_40i_PR_list)+ggtitle("sim1, mRNA4000, TE 40, buffered 40, intensified 40 P vs R")
+mRNA4000_40TE_40b_40i_ROC_plot <- ggplot(mRNA4000_40TE_40b_40i_ROC_df, aes(x=1-specificity, y=sensitivity, color=ROC_name))+JF_theme+geom_line()+xlab("False Positive Rate")+ylab("True Positive Rate")+geom_abline(slope=1, intercept=0)
+mRNA800_40TE_40b_40i_ROC_df <- compare_ROCs(mRNA800_40TE_40b_40i_ROC_list)
+mRNA800_40TE_40b_40i_PR_comp_plot <- compare_PR_curves(mRNA800_40TE_40b_40i_PR_list)+ggtitle("sim1, mRNA4000, TE 40, buffered 40, intensified 40 P vs R")
+mRNA800_40TE_40b_40i_ROC_plot <- ggplot(mRNA800_40TE_40b_40i_ROC_df, aes(x=1-specificity, y=sensitivity, color=ROC_name))+JF_theme+geom_line()+xlab("False Positive Rate")+ylab("True Positive Rate")+geom_abline(slope=1, intercept=0)
+
+sim2_mRNA800_40TE_40b_40i_PR_comp_plot <- compare_PR_curves(sim2_mRNA800_40TE_40b_40i_PR_list)+ggtitle("sim2, mRNA800, TE 40, buffered 40, intensified 40 P vs R")
+sim2_mRNA4000_40TE_40b_40i_PR_comp_plot <- compare_PR_curves(sim2_mRNA4000_40TE_40b_40i_PR_list)+ggtitle("sim2, mRNA4000, TE 40, buffered 40, intensified 40 P vs R")
+
+```
+
+```{r simulation_results_fig}
+sim_results_fig <- (sim_mRNA4000_TE40_b40_i40_injection_MAplots + sim2_mRNA4000_TE40_b40_i40_injection_MAplots) / ((mRNA4000_40TE_40b_40i_PR_comp_plot | sim2_mRNA4000_40TE_40b_40i_PR_comp_plot)+plot_layout(guides="collect")) /
+(sim_mRNA800_TE40_b40_i40_injection_MAplots + sim2_mRNA800_TE40_b40_i40_injection_MAplots) / ((mRNA800_40TE_40b_40i_PR_comp_plot | sim2_mRNA800_40TE_40b_40i_PR_comp_plot)+plot_layout(guides="collect")) +theme(text=element_text("ArialMT")) + plot_annotation(tag_levels = list(c("A","B","C","D","E","F","G","H"))) & theme(plot.tag=element_text(size=12, face="bold"))
+
+
+```
 
 
 ```{r enrichGO}
