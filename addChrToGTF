@@ -1,0 +1,7 @@
+#/bin/sh
+
+gtf=$1
+gtfOut=$2
+
+
+awk 'OFS="\t" {if (NR > 5) $1="chr"$1; print}' $gtf > $gtfOut
