@@ -1,0 +1,55 @@
+samples:
+  - JF216_S25
+  - JF217_S26
+  - JF218_S27
+  - JF219_S28
+  - JF220_S29
+  - JF221_S30
+
+star2rRNA: 
+  flags: "--runMode alignReads --runThreadN 8 --outSAMtype BAM Unsorted --readFilesCommand gunzip -c --outReadsUnmapped Fastx"
+  flags2: "--outSAMmultNmax 1 --outFilterScoreMinOverLread 0 --outFilterMatchNminOverLread 0 --outFilterMatchNmin 21"
+  modules: "STAR/2.6.0c-fasrc01"
+  reference: "/n/macklis_lab/users/jfroberg/hg38/human_rRNA/STAR2.6.0"
+
+star2genome:
+   flags: "--runMode alignReads --runThreadN 8 --outSAMtype BAM SortedByCoordinate --readFilesCommand gunzip -c --outSAMmultNmax 1"
+   flags2: "--outFilterScoreMinOverLread 0 --outFilterMatchNminOverLread 0 --outFilterMatchNmin 21"
+   STARmod: "STAR/2.6.0c-fasrc01"
+   samMod: "samtools/1.5-fasrc02"
+   reference: "/n/macklis_lab/users/jfroberg/hg38/STAR2.6.0"
+   
+featureCounts:
+   modules: "subread/1.5.1-fasrc01"
+   gtf: "/n/macklis_lab/users/jfroberg/gtfs/Homo_sapiens.GRCh38.109_chrNamed_headFix.gtf"
+
+star2transcriptome:
+   flags: "--runMode alignReads --runThreadN 8 --outSAMtype BAM SortedByCoordinate --readFilesCommand gunzip -c --outSAMmultNmax 1"
+   flags2: "--quantMode TranscriptomeSAM --outFilterScoreMinOverLread 0 --outFilterMatchNminOverLread 0 --outFilterMatchNmin 21"
+   STARmod: "STAR/2.6.0c-fasrc01"
+   samMod: "samtools/1.5-fasrc02"
+   gtf: "/n/macklis_lab/users/jfroberg/gtfs/Homo_sapiens.GRCh38.109_chrNamed_headFix.gtf"
+   reference: "/n/macklis_lab/users/jfroberg/hg38/STAR2.6.0"
+   
+lengthDistros:
+    modules: "subread/1.5.1-fasrc01 samtools/1.5-fasrc02"
+    gtf: "/n/macklis_lab/users/jfroberg/gtfs/Homo_sapiens.GRCh38.109_chrNamed_headFix.gtf"
+    script: "nanoRibo-Seq/CPN_SCPN_comparison/makeLengthDistros_v2.sh"
+
+RiboCode:
+   metadata: "experimentTypesFull_SubFall2021.csv"
+   modules: "Anaconda/5.0.1-fasrc02"
+   shell_script: "nanoRibo-Seq/CPN_SCPN_comparison/separateRPbams.sh"
+   annot_gtf: "/n/macklis_lab/users/jfroberg/gtfs/mm10_RiboCode_gtfs/RiboCode_annot.gtf"
+   list_script: "nanoRibo-Seq/CPN_SCPN_comparison/bamFileList_script.sh"   
+   comboScript: "nanoRibo-Seq/CPN_SCPN_comparison/combineORFcounts.sh"
+
+Rmd:
+   metadata: "nanoRiboHEK_metadata.csv"
+   modules: "Pandoc/2.5 R/3.5.1-fasrc01"
+   Rscript: "nanoRibo-Seq/scripts/compile_v3.R"
+   Rmd: "nanoRibo-Seq/scripts/LengthsCountsCov_RiboWaltz_v3.Rmd"
+   shell_script: "nanoRibo-Seq/scripts/separateRPbams.sh"
+   R_LIBS: "/n/home12/jfroberg/R_LIBS/R_LIBS_v3.5.1"
+   gtf: "/n/macklis_lab/users/jfroberg/gtfs/Homo_sapiens.GRCh38.109_chrNamed_headFix.gtf"
+   
