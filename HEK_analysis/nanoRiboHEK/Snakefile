@@ -264,6 +264,8 @@ rule Rmd:
 		"""module load {params.modules};
 		workDir=$(pwd);
 		{params.shell_script} {params.metadata} {params.dedup_bams} {params.dedup_suffix} {output.dedup_RPbams} cpBams.sh;
+		./cpBams.sh;
+		mkdir {output.dedup_RPplots};
 		Rscript --vanilla {params.Rscript} {params.R_LIBS} {params.metadata} {input.dedup_CDS} {input.dedup_UTR5} {input.dedup_UTR3} \
 		{output.dedup_RPbams} {params.gtf} {input.dedup_length} {output.dedup_html} {output.dedup_RPplots} {params.Rmd} $workDir
 		"""

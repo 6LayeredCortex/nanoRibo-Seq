@@ -1,0 +1,590 @@
+---
+title: "HEK_analysis"
+output: html_document
+date: '2023-02-18'
+---
+
+###Need to edit files for HEK run.
+```{r setup}
+knitr::opts_chunk$set(echo=FALSE, message=FALSE)
+library('devtools')
+library('tidyverse')
+library('riboWaltz')
+library("rmarkdown")
+library("patchwork")
+library("pheatmap")
+library("RColorBrewer")
+library("ggplotify")
+library("topGO")
+library("ggstance")
+library("DESeq2")
+library("biomaRt")
+library("UpSetR")
+library("GGally")
+library("clusterProfiler")
+library("org.Mm.eg.db")
+library("enrichplot")
+library("pROC")
+#install_github("xryanglab/xtail")
+library("xtail")
+#BiocManager::install("anota2seq")
+library("anota2seq")
+# #variables that are normally passed in from the Snakemake run:
+
+
+experimentTypeFile="nanoRibo-seq_HEK/nanoRiboHEK_metadata.csv"
+lengthCountsFile="nanoRibo-seq_HEK/dedup_lengthDistroTidy.txt"
+CDS="nanoRibo-seq_HEK/dedupBams/featureCounts_CDS_summary.txt"
+three_utr="nanoRibo-seq_HEK/dedupBams/featureCounts_three_prime_utr_summary.txt"
+five_utr="nanoRibo-seq_HEK/dedupBams/featureCounts_five_prime_utr_summary.txt"
+gtf="/n/macklis_lab/users/jfroberg/gtfs/Homo_sapiens.GRCh38.109_chrNamed_headFix.gtf"
+bamFiles="nanoRibo-seq_HEK/dedup_RPbams"
+outDir="interactivePlots"
+dir.create(outDir)
+#RiboCodeFile="RiboCode_ORFs_out.txt"
+JF_theme <- theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black"), plot.title = element_text(size = 7, face = "bold"),legend.title=element_text(size=7), legend.text=element_text(size=7), axis.text = element_text(size=7), axis.title.x = element_text(size=7),axis.title.y=element_text(size=7))
+```
+
+```{r getGeneNames_from_biomaRt}
+mouse_ensembl <- useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+mouse_gene_symbols <- getBM(attributes=c("ensembl_gene_id","external_gene_name"), mart=mouse_ensembl)
+mouse_gene_symbols_wGeneid <- mouse_gene_symbols %>% mutate(Geneid=ensembl_gene_id)
+ensmusg2ensmust <- getBM(attributes=c("ensembl_gene_id","external_gene_name", "ensembl_transcript_id"), mart=mouse_ensembl) %>% mutate(Geneid=ensembl_gene_id)
+ensembl_to_entrez <- org.Mm.egENSEMBL2EG %>%
+  as.data.frame()
+ensembl_to_allGO <- as.data.frame(org.Mm.egGO2ALLEGS) %>%
+  left_join(ensembl_to_entrez, by = "gene_id")
+# mouse_gene_symbols_resExp <- getBM(attributes=c("ensembl_gene_id","external_gene_name"), filters="ensembl_gene_id", values=resExp_df$Geneid, mart=mouse_ensembl)
+# mouse_gene_symbols_resExp$Geneid <- mouse_gene_symbols_resExp$ensembl_gene_id
+human_ensembl <- useMart("ensembl", dataset="hsapiens_gene_ensembl")
+human_gene_symbols <- getBM(attributes=c("ensembl_gene_id","external_gene_name"), mart=human_ensembl)
+human_gene_symbols_wGeneid <- human_gene_symbols %>% mutate(Geneid=ensembl_gene_id)
+
+
+```
+
+###Load in the metadata from the experiment types file. 
+###Compute "descriptive names" by dropping the "samps" and "date" fields and pasting together.
+###Save descriptiveNames as Upper Case "Samples" in experimentTypes.
+```{r loadMetadata, echo=FALSE}
+experimentTypes=read.csv(experimentTypeFile)
+ descriptiveNames <- experimentTypes %>%
+  unite(col="descriptiveNames", -samps, -date,-exp, sep=".")
+ descriptiveNames <- dplyr::select(descriptiveNames, samps, descriptiveNames)
+ experimentTypes$Samples <- descriptiveNames$descriptiveNames
+ experimentTypes
+```
+
+###Convert length counts to relative frequencies, add in the metadata
+```{r countsToFreqwMeta}
+lengthCounts <- read.csv(lengthCountsFile)
+totalCounts <- lengthCounts %>%
+  group_by(samps,anno) %>%
+  summarize(sum=sum(count))
+lengthDistro <- merge(lengthCounts, totalCounts, by=c("samps", "anno"))
+lengthDistro <- lengthDistro %>%
+  mutate(freq=count/sum)
+#metadata <- read.csv("metadata.csv")
+lengthDistro <- merge(lengthDistro, experimentTypes, by="samps")
+```
+
+###Find the length with max freq for all samples
+```{r maxFreq}
+maxFreq <- lengthDistro %>%
+  group_by(samps, anno) %>%
+  summarize(max=max(freq))
+max <- merge(maxFreq, lengthDistro, by=c("samps","anno"))
+maxLengthDistro <- filter(max, freq==max)
+maxLengthCDS_RPs <- filter(maxLengthDistro, exp=="RP" & anno=="CDS")
+```
+
+
+###Plot Freq vs length for the CDS with various groupings of the samples
+```{r freqPlotting}
+CDS_riboProf <- ggplot(filter(lengthDistro, exp=="RP",anno=="CDS"), aes(x=length, y=freq, color=Samples))+geom_line(size=1)+JF_theme+xlim(20,40)+xlab("length (nt)")+theme(axis.title.x = element_text(vjust=0))
+CDS_riboProf_colored <- ggplot(filter(lengthDistro, exp=="RP",anno=="CDS"), aes(x=length, y=freq, color=Samples))+geom_line(size=1)+JF_theme+xlim(20,40)+xlab("length (nt)")+theme(axis.title.x = element_text(vjust=0))+scale_color_manual(values=c("red","orange","blue","pink","coral","light blue"), labels=c("1k cells, rep A", "10k cells, rep A","50k cells, rep A","1k cells, rep B", "10k cells, rep B","50k cells, rep B"))+theme(legend.position = "top")
+CDS_riboProf_byDate <- ggplot(filter(lengthDistro, exp=="RP",anno=="CDS"), aes(x=length, y=freq, color=Samples))+geom_line(size=1)+facet_wrap(~date)+xlim(20,40)+JF_theme
+CDS_riboProf_byDate_noxlim <- ggplot(filter(lengthDistro, exp=="RP",anno=="CDS"), aes(x=length, y=freq, color=descriptiveNames))+geom_line(size=1)+facet_wrap(~date)+ylim(0,0.5)+JF_theme
+if ( "AF" %in% levels(lengthDistro$exp) ) {
+CDS_AF_byDate <-ggplot(filter(lengthDistro, exp=="AF",anno=="CDS"), aes(x=length, y=freq, color=Samples))+geom_line(size=1)+facet_wrap(~date)+ylim(0,0.5)+JF_theme
+CDS_AF_byDate
+}
+allAnno_RiboProf_bySample <- ggplot(filter(lengthDistro, exp=="RP", anno %in% c("CDS","three_prime_utr","snoRNA")), aes(x=length, y=freq, color=anno))+geom_line(size=1)+facet_wrap(~Samples, nrow=ceiling(nlevels(factor(lengthDistro$Samples))/6))+xlim(20,40)+JF_theme+xlab("length (nt)")
+CDS_riboProf
+CDS_riboProf_byDate
+allAnno_RiboProf_bySample
+```
+
+###Load in the featureCounts. Use only CDS reads for RiboProf, 3'+5'UTR+CDS reads for AlkFrag libraries
+```{r loadFeatureCounts, echo=FALSE}
+loadFC <- function(experimentType, CDS, five_utr, three_utr) {
+sampNames=experimentType$samps
+CDS <- read.table(file=CDS, header= T, sep="\t", stringsAsFactors = F)
+Five_prime <- read.table(file=five_utr, header= T, sep="\t", stringsAsFactors = F)
+Three_prime <- read.table(file=three_utr, header= T, sep="\t", stringsAsFactors = F)
+filteredCDS <- CDS %>% 
+  filter(Geneid %in% Five_prime$Geneid & Geneid %in% Three_prime$Geneid)
+filtered5p <- Five_prime %>%
+  filter(Geneid %in% Five_prime$Geneid & Geneid %in% Three_prime$Geneid)
+filtered3p <- Three_prime %>%
+  filter(Geneid %in% Five_prime$Geneid & Geneid %in% Three_prime$Geneid)
+#move to new Rmd
+maxSampCol <- 6+length(sampNames)
+mRNA_counts <- filteredCDS[,7:maxSampCol]+filtered5p[,7:maxSampCol]+filtered3p[,7:maxSampCol]
+CDS_counts <- filteredCDS[,7:maxSampCol]
+#
+colnames(mRNA_counts) <- sampNames
+colnames(CDS_counts) <- sampNames
+mRNA_counts <- mRNA_counts %>%
+  mutate(Geneid=filteredCDS$Geneid, Length=filteredCDS$Length)
+CDS_counts <- CDS_counts %>%
+  mutate(Geneid=filteredCDS$Geneid, Length=filteredCDS$Length)
+mRNA_counts_tidy <- gather(mRNA_counts,"samps","counts", -Geneid, -Length)
+CDS_counts_tidy <- gather(CDS_counts,"samps","counts", -Geneid, -Length)
+mRNA_counts_tidy <- merge(mRNA_counts_tidy, experimentType, by="samps")
+CDS_counts_tidy <- merge(CDS_counts_tidy, experimentType, by="samps")
+raw_counts_tidy <- rbind(filter(mRNA_counts_tidy, exp=="AF"),filter(CDS_counts_tidy, exp=="RP"))
+}
+featureCounts_tidy <- loadFC(experimentTypes, CDS, five_utr, three_utr)
+total_mRNA_counts <- featureCounts_tidy %>%
+  group_by(Samples) %>%
+  summarize(mRNA_counts=sum(counts))
+total_mRNA_counts
+total_mRNA_counts_plot <- ggplot(total_mRNA_counts, aes(x=Samples, y=mRNA_counts, fill=Samples))+geom_bar(stat="identity", position="dodge")+JF_theme+theme(axis.text.x = element_text(angle = 45, hjust=1))+xlab("")+geom_hline(yintercept = 150000)
+total_mRNA_counts_plot
+experimentTypesPlus_mRNACounts <- merge(total_mRNA_counts, experimentTypes, by="Samples")
+total_mRNA_counts_facet <- ggplot(experimentTypesPlus_mRNACounts, aes(x=Samples, y=mRNA_counts, fill=Samples))+geom_bar(stat="identity", position="dodge")+JF_theme+theme(axis.text.x = element_text(angle = 45, hjust=1))+xlab("")+geom_hline(yintercept = 150000)+facet_wrap(~exp, nrow=2, scales="free_x")
+total_mRNA_counts_facet
+```
+
+###Calculate the and plot reads per kilobase per million mapped (to mRNA) for the ribosome profiling experiments
+```{r regionCovCalc}
+#moveTo new Rmd
+loadFCw_regions <- function(experimentType, CDS, five_utr, three_utr) {
+sampNames=experimentType$samps
+#write.csv(file="test.txt", sampNames)
+CDS <- read.table(file=CDS, header= T, sep="\t", stringsAsFactors = F)
+Five_prime <- read.table(file=five_utr, header= T, sep="\t", stringsAsFactors = F)
+Three_prime <- read.table(file=three_utr, header= T, sep="\t", stringsAsFactors = F)
+filteredCDS <- CDS %>% 
+  filter(Geneid %in% Five_prime$Geneid & Geneid %in% Three_prime$Geneid)
+filtered5p <- Five_prime %>%
+  filter(Geneid %in% Five_prime$Geneid & Geneid %in% Three_prime$Geneid)
+filtered3p <- Three_prime %>%
+  filter(Geneid %in% Five_prime$Geneid & Geneid %in% Three_prime$Geneid)
+maxSampCol <- 6+length(sampNames)
+mRNA_counts <- filteredCDS[,7:maxSampCol]+filtered5p[,7:maxSampCol]+filtered3p[,7:maxSampCol]
+CDS_counts <- filteredCDS[,7:maxSampCol]
+FiveP_counts <- filtered5p[,7:maxSampCol]
+ThreeP_counts <- filtered3p[,7:maxSampCol]
+colnames(CDS_counts) <- sampNames
+colnames(FiveP_counts) <- sampNames
+colnames(ThreeP_counts) <- sampNames
+CDS_counts <- CDS_counts %>% mutate(Geneid=filteredCDS$Geneid, Length=filteredCDS$Length, region="CDS")
+FiveP_counts <-FiveP_counts %>% mutate(Geneid=filteredCDS$Geneid, Length=filtered5p$Length, region="5' UTR")
+ThreeP_counts <-ThreeP_counts %>% mutate(Geneid=filteredCDS$Geneid, Length=filtered3p$Length, region="3' UTR")
+All_counts <- rbind(CDS_counts, FiveP_counts, ThreeP_counts)
+All_counts_tidy <- gather(All_counts, "samps","counts", -Geneid, -Length, -region)
+All_counts_tidy <- merge(All_counts_tidy, experimentType, by="samps")
+rpk <- All_counts_tidy %>%
+  group_by(samps, region, exp) %>%
+  summarize(totCounts=sum(counts),totLength=sum(Length)) %>%
+  mutate(rpk=totCounts/(totLength/1000))
+million_mapped <- All_counts_tidy %>%
+  group_by(samps) %>%
+  summarize(mRNA_mapped_mil=sum(counts)/1e6)
+rpkm <- merge(rpk, million_mapped, by="samps") %>%
+  mutate(rpkm=rpk/mRNA_mapped_mil)
+#
+}
+rpkm_byRegion <- loadFCw_regions(experimentTypes, CDS, five_utr, three_utr)
+rpkm_byRegion$region <- factor(rpkm_byRegion$region, levels=c("5' UTR","CDS","3' UTR"))
+rpkm_byRegion <- merge(rpkm_byRegion, descriptiveNames, by="samps")
+write.csv(file="test134-185.txt", head(rpkm_byRegion) , quote=F, row.names=F)
+rpkm_byRegion <- rpkm_byRegion %>%
+  mutate(Samples=descriptiveNames)
+rpkm_byRegion_plot <- ggplot(filter(rpkm_byRegion, exp=="RP"), aes(y=rpkm,x=Samples, fill=region))+facet_wrap(~exp)+geom_bar(stat="identity", position="dodge")+JF_theme+theme(axis.text.x = element_text(angle = 45, hjust=1))+xlab("")
+rpkm_byRegion_plot
+#
+```
+
+###Calculate TPMs from the raw counts
+```{r calculateTPM, echo=FALSE}
+calcTPM <- function(RC_tidy) {
+  RC <- RC_tidy %>% 
+    dplyr::select(samps, Geneid, Length, counts) %>% #not robust to different types of metadata
+    spread("samps","counts")
+  Geneid=RC$Geneid
+  lengths=RC$Length
+  rawCounts = RC[,3:ncol(RC)] #rawCounts start with 7th column
+  
+  x <- rawCounts/lengths
+  tpm.mat <- t( t(x) * 1e6 / colSums(x) )
+  TPM_out <- data.frame(Geneid, tpm.mat)
+  colnames(TPM_out) <- c("Geneid",colnames(rawCounts))
+  TPM_out
+}
+TPMs <- calcTPM(featureCounts_tidy)
+```
+
+###Now plot the log10TPM+1 distributions
+```{r plotTPM_distros, echo=FALSE}
+tpmDensity <- function(TPMs,TPM_title="TPM_density") {
+  #takes in a tidy table of tpms and returns a density plot
+ JF_theme <- theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black"), plot.title = element_text(size = 7, face = "bold"),legend.title=element_text(size=7), legend.text=element_text(size=7), axis.text = element_text(size=7), axis.title.x = element_text(size=7),axis.title.y=element_text(size=7))
+  tpmPlot <- ggplot(TPMs,aes(log10TPM,fill=Samples ))+geom_histogram(alpha=0.3,position="identity",bins=100)+JF_theme+theme(legend.position = c(0.75,0.75))+ggtitle(TPM_title)
+}
+TPMs_tidy <- gather(TPMs, "samps","TPM",-Geneid)
+TPMs_tidy <- TPMs_tidy %>%
+  mutate(log10TPM=log10(TPM+1))
+TPMs_tidy <- merge(TPMs_tidy, descriptiveNames, by="samps")
+TPMs_tidy <- TPMs_tidy %>%
+  mutate(Samples=descriptiveNames)
+TPMdensity <- tpmDensity(TPMs_tidy)
+TPMdensity <- TPMdensity + ylab("# of genes")
+TPMdensity
+```
+
+###Plot the number of genes above TPM threshold=10 and threshold=20
+```{r aboveTPMthreshold, echo=FALSE}
+aboveTPM <- function(TPM_tidy, threshold=10) {
+  #take in a tpm table and a tpm threshold, 
+  tpm_frame <- data.frame(TPM_tidy, tpmFilter=TPM_tidy$TPM >= threshold)
+  tpm_frame <- group_by(tpm_frame, Samples)
+  tpm_aboveFilt <- summarize(tpm_frame, tpmFilter=sum(tpmFilter))
+}
+aboveTPM10 <- aboveTPM(TPMs_tidy, threshold=10)
+aboveTPM20 <- aboveTPM(TPMs_tidy, threshold=20)
+aboveTPM10_plot <- ggplot(aboveTPM10, aes(x=Samples, y=tpmFilter, fill=Samples))+geom_col()+ggtitle("TPM above 10")+JF_theme+xlab("")+theme(legend.position = "none")+theme(axis.text.x = element_text(angle = 45, hjust=1))+ylab("# genes above threshold")
+aboveTPM20_plot <- ggplot(aboveTPM20, aes(x=Samples, y=tpmFilter, fill=Samples))+geom_col()+ggtitle("TPM above 20")+JF_theme+theme(legend.position = "none")+theme(axis.text.x = element_text(angle = 45, hjust=1))+ylab("# genes above threshold")+xlab("")
+aboveTPM10_plot
+aboveTPM20_plot
+```
+
+###Plot the distribtion of rawCounts in each sample:
+```{r plotRawDistros, echo=FALSE}
+rawDensity <- ggplot(featureCounts_tidy,aes(log10(counts+1),fill=Samples ))+geom_histogram(alpha=0.3,position="identity",bins=100)+JF_theme+theme(legend.position = c(0.75,0.75))+ggtitle("rawCounts_density")
+rawDensity
+```
+
+
+###Plot the number of genes in each sample above rawCounts=10, 20, 40
+```{r aboveRawThreshold, echo=FALSE}
+aboveRaw <- function(FC_tidy, threshold=10) {
+  #take in a featureCounts table and a raw threshold, 
+  raw_frame <- data.frame(FC_tidy, rawFilter=FC_tidy$counts >= threshold)
+  raw_frame <- group_by(raw_frame, Samples)
+  raw_aboveFilt <- summarize(raw_frame, rawFilter=sum(rawFilter))
+}
+aboveRaw10 <- aboveRaw(featureCounts_tidy, threshold=10)
+aboveRaw20 <- aboveRaw(featureCounts_tidy, threshold=20)
+aboveRaw40 <- aboveRaw(featureCounts_tidy, threshold=40)
+aboveRaw10_plot <- ggplot(aboveRaw10, aes(x=Samples, y=rawFilter, fill=Samples))+geom_col()+ggtitle("Raw above 10")+JF_theme+theme(legend.position = "none")+theme(axis.text.x = element_text(angle = 45, hjust=1))+ylab("# genes above threshold")+xlab("")
+aboveRaw20_plot <- ggplot(aboveRaw20, aes(x=Samples, y=rawFilter, fill=Samples))+geom_col()+ggtitle("Raw above 20")+JF_theme+theme(legend.position = "none")+theme(axis.text.x = element_text(angle = 45, hjust=1))+ylab("# genes above threshold")+xlab("")
+aboveRaw40_plot <- ggplot(aboveRaw40, aes(x=Samples, y=rawFilter, fill=Samples))+geom_col()+ggtitle("Raw above 40")+JF_theme+theme(legend.position = "none")+theme(axis.text.x = element_text(angle = 45, hjust=1))+ylab("# genes above threshold")+xlab("")
+aboveRaw10_plot
+aboveRaw20_plot
+aboveRaw40_plot
+```
+
+###Code to filter a TPM-table either for genes where 1) all samples above a TPM-based filter (filterTPMs)
+###Or 2) genes above a rawCount threshold (defult=10) in a given fraction of samples (default=1/4).
+```{r filter_functions}
+filterTPMs <- function(TPMs, threshold=10) {
+  TPMs_filt <- filter_if(TPMs, is.double, all_vars(. > threshold))
+}
+filterRaw <- function(FC_tidy, threshold=10, frac_samples=1/4, experimentTypes, TPMs) {
+  raw_frame <- data.frame(FC_tidy, rawFilter=FC_tidy$counts >= threshold)
+  #First, filter for all samples where a gene passed the raw filter. Then, count the number of instances
+  #Finally, filter for Genes where the number of samples exceeds the cutoff (where gene is above threshold in n/2-1 samples). Then filter the rows of the TPM matrix for gene IDs matching the genes passing the filter.
+  
+  filt_frame <- filter(raw_frame, rawFilter==TRUE)
+  filt_frame <- filt_frame %>%
+    group_by(Geneid) %>%
+    add_count(Geneid)
+  
+  # raw_frame <- group_by(raw_frame, Geneid) %>%
+  #   add_count(rawFilter)
+  sampNames=experimentTypes$samps
+  numSamps <- length(sampNames)
+  sampCutoff <- frac_samples * numSamps
+  GenesOverFilt <- filter(filt_frame, n >= sampCutoff)
+  TPMs_filt <- filter(TPMs, Geneid %in% GenesOverFilt$Geneid)
+}
+```
+
+###Calculate and plot Pearson's R correlation coefficient for all genes above a certain raw threshold (here, 10).
+###In a certain fraction of samples (here, 1/4 of samples)
+###Leave mRNA counts and date in the report, remove for the figure version for clarity.
+```{r TPMCorrelationHeatmap}
+TPMs_filtered <- filterRaw(FC_tidy=featureCounts_tidy,threshold=10, frac_samples=1/4, experimentTypes = experimentTypes, TPMs=TPMs)
+numGenesAboveThreshold <- dim(TPMs_filtered)[1]
+numGenesAboveThreshold
+cormat <- cor(dplyr::select((TPMs_filtered), -Geneid))
+experimentTypesPlus_mRNACounts <- merge(experimentTypes, total_mRNA_counts, by="Samples")
+anno <- dplyr::select(experimentTypesPlus_mRNACounts, -samps)
+rownames(anno) <- experimentTypesPlus_mRNACounts$samps
+TPM_cor_pheatmap <- pheatmap(cormat, display_numbers = T, color=colorRampPalette(brewer.pal(n=9, name="YlOrRd"))(100), annotation_col=dplyr::select(anno, -Samples), treeheight_row = 10, treeheight_col = 10, show_colnames = F, labels_col = anno$Samples, show_rownames = F, fontsize=7)
+TPM_cor_pheatmap
+anno <- dplyr::select(experimentTypesPlus_mRNACounts, -samps, -date, -mRNA_counts)
+rownames(anno) <- experimentTypesPlus_mRNACounts$samps
+TPM_cor_pheatmap_simple <- pheatmap(cormat, display_numbers = T, color=colorRampPalette(brewer.pal(n=9, name="YlOrRd"))(100), annotation_col=dplyr::select(anno, -Samples), treeheight_row = 10, treeheight_col = 10, show_colnames = F, labels_col = anno$Samples, show_rownames = F, fontsize=7)
+TPM_cor_pheatmap_simple
+```
+
+
+#Load the LiRiboSeq data
+```{r load_LiRiboSeq}
+Li_RiboSeq_rep1_file <- "LiRiboSeq/HTSeq_counts/GSM4594578_HEK293T_RiboSeq_rep1.18to35nt.htseq_count.txt.gz"
+Li_RiboSeq_rep2_file <- "LiRiboSeq/HTSeq_counts/GSM4594579_HEK293T_RiboSeq_rep2.18to35nt.htseq_count.txt.gz"
+Li_1kCells_rep1_file <- "LiRiboSeq/HTSeq_counts/GSM4594576_HEK293T_RFP_1kCells_rep1.18to35nt.htseq_count.txt.gz"
+Li_1kCells_rep2_file <- "LiRiboSeq/HTSeq_counts/GSM4594577_HEK293T_RFP_1kCells_rep2.18to35nt.htseq_count.txt.gz"
+Li_50kCells_rep2_file <- "LiRiboSeq/HTSeq_counts/GSM4594575_HEK293T_RFP_50kCells_rep2.18to35nt.htseq_count.txt.gz"
+Li_50kCells_rep1_file <- "LiRiboSeq/HTSeq_counts/GSM4594574_HEK293T_RFP_50kCells_rep1.18to35nt.htseq_count.txt.gz"
+
+load_LiCounts <- function(fileCell_list){
+  theFile=fileCell_list$file
+  cells=fileCell_list$cells
+  countData <- read.table(file=theFile, header=F)
+  colnames(countData) <- c("external_gene_name", "counts")
+  countData <- right_join(countData, human_gene_symbols_wGeneid, by="external_gene_name")
+  countData <- data.frame(countData, exp="RP", method=case_when(
+    grepl("Cells",theFile)==T~ "LiRiboSeq",
+    grepl("Cells",theFile)==F~ "Ingolia"), cells=cells)
+}
+
+Li_list=list(
+  "bulk_rep1"=list("file"=Li_RiboSeq_rep1_file, "cells"="bulk"),
+  "bulk_rep2"=list("file"=Li_RiboSeq_rep2_file, "cells"="bulk"),
+  "1K_rep1"=list("file"=Li_1kCells_rep1_file, "cells"="1k"),
+  "1K_rep2"=list("file"=Li_1kCells_rep2_file, "cells"="1k"),
+  "50K_rep1"=list("file"=Li_50kCells_rep1_file, "cells"="50k"),
+  "50K_rep2"=list("file"=Li_50kCells_rep2_file, "cells"="50k")
+  )
+
+ LiRiboSeq_countsData_tidy <- lapply(Li_list, load_LiCounts) %>% bind_rows(.id="samps") %>% mutate(rep=str_extract(samps, regex("_.+")))
+```
+
+```{r nanoRiboVsLiRibo}
+nanoRibo_FC_tidy <- featureCounts_tidy %>% dplyr::select(samps, Geneid, counts, cells, exp, method, rep, Length) %>% mutate(cells=case_when(
+  cells==1000 ~"1k", cells==10000 ~ "10k", cells==50000 ~ "50k"
+))
+LiRiboSeq_FC_tidy <- LiRiboSeq_countsData_tidy %>% dplyr::select(samps, Geneid, counts, cells, exp, method, rep) %>% right_join(dplyr::select(nanoRibo_FC_tidy, Geneid, Length), by="Geneid") %>% distinct() %>% filter(is.na(counts)==F)
+
+nanoLi_FC_tidy <- bind_rows(nanoRibo_FC_tidy, LiRiboSeq_FC_tidy) %>% filter( (Geneid %in% LiRiboSeq_FC_tidy$Geneid)==T & (Geneid %in% nanoRibo_FC_tidy$Geneid)==T)
+nanoLi_TPMs <- calcTPM(nanoLi_FC_tidy)
+
+nanoLi_expTypes <- nanoLi_FC_tidy %>% dplyr::select(samps, cells, exp, method, rep) %>% distinct()
+
+nanoLi_TPMs_raw_filt <- filterRaw(FC_tidy=nanoLi_FC_tidy, experimentTypes = nanoLi_expTypes, TPMs=nanoLi_TPMs, frac_samples=10/12, threshold=10)
+```
+
+
+```{r nanoVsLi_heatmaps}
+
+makeCormat <- function(TPMs_tidy) {
+  #Take in a TPMs_tidy frame, and make a correlation heatmap with stage, region, strain as annotations.
+  TPMs_mat <- TPMs_tidy %>% dplyr::select(Geneid, samps, TPM) %>% spread(key="samps",value="TPM")
+  anno <- TPMs_tidy %>% dplyr::select(samps, cells, exp, method) %>% group_by(samps, cells, exp, method) %>% summarize(n=n()) %>% dplyr::select(-n)
+  cormat <- cor(log10(dplyr::select(TPMs_mat, -Geneid)+1))
+  return(cormat)
+}
+
+makeCorePheatmaps <- function(TPMs_tidy, displayNums=T, mainTitle="heatmap", w=6.5, h=5) {
+  #Take in a TPMs_tidy frame, and make a correlation heatmap with stage, region, strain as annotations.
+  TPMs_mat <- TPMs_tidy %>% dplyr::select(Geneid, samps, TPM) %>% spread(key="samps",value="TPM")
+  anno <- TPMs_tidy %>% dplyr::select(samps, cells, exp, method) %>% group_by(samps, cells, exp, method) %>% summarize(n=n()) %>% dplyr::select(-n)
+  cormat <- cor(log10(dplyr::select(TPMs_mat, -Geneid)+1), method="pearson")
+  #return(rownames(cormat))
+  # anno <- data.frame(anno)
+  # rownames(anno) <- anno$samps
+  L <- rownames(cormat) == anno$samps
+  if (all(L)==T) {
+    anno <- data.frame(anno)
+    rownames(anno) <- anno$samps
+    anno <- dplyr::select(anno, -samps)
+   } else {
+    stop("rownames(cormat) is not equal to samp names. Samps not sorted correctly")
+   }
+  thePheatmap <- pheatmap(cormat, annotation_col=anno, display_numbers = displayNums, main=mainTitle, breaks=seq(0.7,1,by=0.01), width=w, height=h, cex=0.5, show_colnames = F, treeheight_col = 10, treeheight_row = 10, color = colorRampPalette(rev(brewer.pal(n = 7, name =
+  "RdYlBu")))(30))
+}
+
+nanoLi_TPMs_tidy_filt <- nanoLi_TPMs_raw_filt %>% gather(key="samps",value="TPM", -Geneid) %>% left_join(nanoLi_expTypes, by="samps")
+#make sampNames more descriptive
+nanoLi_TPMs_tidy_filt_newSamps <- nanoLi_TPMs_tidy_filt %>% mutate(samps=case_when(
+  method=="Ingolia" | method=="LiRiboSeq" ~ paste(method, samps, sep="_"),
+  method=="nanoRibo-seq" ~ paste("nanoRibo_", cells, rep, sep="")
+))
+nanoVsLi_pheatmap <- makeCorePheatmaps(nanoLi_TPMs_tidy_filt_newSamps, mainTitle="method correlations", displayNums = F)
+
+```
+
+
+###Run RiboWaltz to evaluate 3-nt periodicity in the data sets. 
+###Requires a directory of transcriptome-aligned BamFiles and a gtf
+```{r bamToList, echo=FALSE}
+#Try loading in all the files and see how it goes. After a more careful
+#reading of the RiboWaltz vignette, it looks like it will process samples separately.
+#make a named vector mapping bamFile names (no path or extension needed) to descriptiveNames
+RP_samps <- filter(experimentTypes, exp=="RP")
+RP_samps <- data.frame(RP_samps)
+RP_descriptiveNames <- as.character(RP_samps$Samples)
+names(RP_descriptiveNames) <- as.character(RP_samps$samps)
+write.csv(file="test337.txt", RP_descriptiveNames)
+annotation_dt <- create_annotation(gtfpath = gtf, dataSource = "GRCm38.95",organism="Mus musculus")
+reads_list <- bamtolist(bamfolder = bamFiles, annotation = annotation_dt, transcript_align = FALSE, name_samples = RP_descriptiveNames) 
+```
+
+```{r lengthFilter, echo=FALSE}
+#From last run, need to set length_filter_mode="custom" for "bad" or
+#RNA-seq libraries to get scored. 
+filtered_list <- riboWaltz::length_filter(data = reads_list, length_filter_mode = "custom", length_range = c(27:33))
+```
+
+```{r psite, echo=FALSE}
+#perform p-site analysis for all samples, save data to a sub-folder of the transcriptome alignment.
+dir.create(outDir)
+psite_dir <- paste(outDir,'/psite', sep="")
+dir.create(psite_dir)
+psite <- psite(data=filtered_list, plot=T, plot_dir = psite_dir, plot_format = "pdf")
+```
+
+###Make plots that stratify by frame:
+####At first, I plotted using reads_list. This makes plots across all reads lengths
+####Plotting using the length-filtered reads (filtered_list) makes much nicer graphs.
+```{r stratify, echo=FALSE}
+reads_psite_list <- psite_info(filtered_list,psite)
+frames_stratified <- frame_psite_length(reads_psite_list, region="all",cl=90)
+strat_dir <- paste(outDir,"/frame_counts",sep="")
+dir.create(strat_dir)
+#setwd(strat_dir)
+pdfName <- paste(strat_dir, "Frame_counts_all_samples.pdf", sep="/" )
+frames_stratified$plot
+pdf(pdfName)
+frames_stratified$plot
+dev.off()
+#The plot looks squished if I try plotting all of them on the same plot. Try looping over the sampleNames and making individual plots for each one. Update: If I only include filtered reads, the graphs aren't too squished and are readable
+sampleNames=unique(psite$sample)
+for(sampleName in sampleNames) {
+  frame_stratified=frame_psite_length(reads_psite_list,  sample=sampleName, region="all",cl=90)
+  pdfName=paste(sampleName,".pdf",sep="")
+  pdf(file=pdfName)
+  plot(frame_stratified$plot)
+  dev.off()
+}
+```
+
+###P-site heatmaps (both directly from RiboWaltz, and by re-plotting the RiboWaltz data for a nicer-looking plot) for all samples in current set. 
+###Currently using scale factors as 1/CDS_reads:
+```{r psite_heatmap, echo=FALSE}
+heat_dir <- paste(outDir,"/heatmaps",sep="")
+dir.create(heat_dir)
+#setwd(heat_dir)
+#calculate scale factors as the inverse of CDS_counts
+scale_factors <- filter(featureCounts_tidy, exp=="RP") %>%
+  group_by(samps) %>%
+  summarize(CDS_reads=sum(counts)) %>%
+  mutate(scale_factors=1/CDS_reads) %>%
+  dplyr::select(scale_factors)
+scale_factors <- c(t(scale_factors))
+names(scale_factors) <- sampleNames
+#Build up the list of sample names
+sampNamesList <- list()
+for (sampName in sampleNames) {
+  sampNamesList[[sampName]] <- c(sampName)
+}
+psite_heatmap <- metaheatmap_psite(reads_psite_list, annotation=annotation_dt,log=F,utr5l=15, cdsl=30, utr3l=15, sample=sampNamesList, scale_factors=scale_factors)
+psite_heatmap$plot
+pdfName=paste(heat_dir, "psite_heatmap.pdf",sep="/")
+pdf(file=pdfName, width=11, height=8.5)
+plot(psite_heatmap$plot)
+dev.off()
+#Example plotting function that looks nicer than a heatmap:
+psite_signal_plot <- ggplot(psite_heatmap$dt, aes(x=distance,y=reads,color=sample))+geom_line()+JF_theme+facet_wrap(~reg)
+psite_signal_plot
+psite_dt <- psite_heatmap$dt
+psite_dt$reg <- plyr::revalue(psite_dt$reg, c("Distance from start (nt)"="from start (nt):","Distance from stop (nt)"="from stop (nt):"))
+psite_signal_heat <- ggplot(psite_dt, aes(x=distance,fill=reads,y=sample))+geom_tile()+facet_wrap(~reg)+scale_fill_gradient(low="white", high="black")+JF_theme+xlab("distance from start or stop (nt)")+ylab("")+xlab("")
+psite_signal_heat
+#look at how scaling is done. Try row normalization of raw read counts to compute frequencies within the regions of interest
+psite_heatmap_raw <- metaheatmap_psite(reads_psite_list, annotation=annotation_dt,log=F,utr5l=15, cdsl=30, utr3l=15, sample=sampNamesList)
+psite_dt_raw <- psite_heatmap_raw$dt
+psite_dt_raw$reg <- plyr::revalue(psite_dt_raw$reg, c("Distance from start (nt)"="from start (nt):","Distance from stop (nt)"="from stop (nt):"))
+psite_region_sums <- psite_dt_raw %>%
+  group_by(sample, reg) %>%
+  summarize(region_sum=sum(reads))
+psite_dt_raw <- merge(psite_dt_raw, psite_region_sums, by=c("sample","reg"))
+psite_dt_raw <- psite_dt_raw %>%
+  mutate(freq=reads/region_sum) %>% 
+  mutate(Samples=sample)
+titration_metadata <- dplyr::select(experimentTypes, Samples, exp, date, cells) %>% filter(exp=="RP")
+psite_dt_raw <- merge(psite_dt_raw, titration_metadata, by="Samples")
+psite_dt_raw <- psite_dt_raw %>%
+  mutate(Samples= fct_reorder(Samples,as.numeric(cells), .desc=F))
+#psite_dt_raw <- merge(psite_dt_raw, dplyr::filter(experimentTypes, Samples, exp_date), by="Samples")
+psite_freqHeat <- ggplot(psite_dt_raw, aes(x=distance,fill=freq,y=sample))+geom_tile()+facet_wrap(~reg)+scale_fill_gradient(low="white", high="black")+JF_theme+xlab("distance from start or stop (nt)")+ylab("")+xlab("")+theme(legend.position="bottom")
+psite_freqHeat
+pdfName=paste(heat_dir, "psite_freq_heatmap.pdf",sep="/")
+pdf(file=pdfName, width=11, height=8.5)
+plot(psite_freqHeat)
+dev.off()
+```
+
+###Next, calculate the percent of P-sites within each reading frame for each sample.
+```{r framePsite, echo=FALSE}
+frame_dir <- paste(outDir,"/frame_psite_percentage",sep="")
+dir.create(frame_dir)
+#setwd(frame_dir)
+frame_psites <- frame_psite(reads_psite_list, region="all")
+frame_psites$plot
+pdfName <- paste(frame_dir, "Frame_percentages_all_samples.pdf", sep="/")
+pdf(pdfName)
+plot(frame_psites$plot)
+dev.off()
+sampleNames=unique(psite$sample)
+for(sampleName in sampleNames) {
+  aFramePsite=frame_psite(reads_psite_list, sample=sampleName, region="all")
+  pdfName=paste(sampleName,".pdf",sep="")
+  pdf(file=pdfName)
+  plot(aFramePsite$plot)
+  dev.off()
+}
+```
+
+###And make P-site frequency plots for comparison across samples:
+```{r psitePlotting, echo=FALSE}
+plotFramePsites <- function(samples, frame_psites, sampNames=samples) {
+  #function to take in a list of samples, and frame_psites Ribowaltz object    #Plots the percentage of reads over CDSs in each frame, grouped by samples.
+  FPs <- frame_psites$dt
+  FPsToPlot <- filter(FPs, sample %in% samples & region == "CDS" )
+  FPplot <- ggplot(data=FPsToPlot, aes(x=sample,y=percentage,fill=as.factor(frame)))
+  FPplot <- FPplot+geom_bar(stat="identity", position=position_dodge())+theme_minimal(base_size=18)+scale_fill_discrete(name="frame")+ylim(0,100)+scale_x_discrete(labels=sampNames)+JF_theme
+  FPplot <- FPplot+theme(axis.text.x = element_text(angle = 45, hjust=1))+xlab("")+ylab("%P-sites in each frame")
+                           
+}
+#setwd(frame_dir)
+psiteFreq<- plotFramePsites(sampleNames,frame_psites)
+pdfName=paste(frame_dir, "psite_freq.pdf",sep="/")
+pdf(file=pdfName, width=11, height=8.5)
+plot(psiteFreq)
+dev.off()
+psiteFreq
+```
+```{r HEK_figure}
+HEK_samp_labels <- c("1k cells, rep A", "10k cells, rep A","50k cells, rep A","1k cells, rep B", "10k cells, rep B","50k cells, rep B") 
+# HEK_figure <-  CDS_riboProf_colored + (rpkm_byRegion_plot+scale_x_discrete(labels=HEK_samp_labels)) + (psite_freqHeat + scale_y_discrete(labels=HEK_samp_labels)+theme(legend.position = "top")) + (psiteFreq +scale_x_discrete(labels=HEK_samp_labels)) + (as.ggplot(nanoVsLi_pheatmap))+plot_annotation(tag_levels = list(c("A","B","C","D","E"))) & theme(plot.tag=element_text(size=12, face="bold"))+theme(legend.key.size=unit(0.5,"line"))
+
+
+
+
+HEK_figure <-  (CDS_riboProf_colored | rpkm_byRegion_plot+scale_x_discrete(labels=HEK_samp_labels)) / (psite_freqHeat + scale_y_discrete(labels=HEK_samp_labels)+theme(legend.position = "top") | psiteFreq +scale_x_discrete(labels=HEK_samp_labels)) / as.ggplot(nanoVsLi_pheatmap)+plot_layout( heights=c(2,2,5))+plot_annotation(tag_levels = list(c("A","B","C","D","E"))) & theme(plot.tag=element_text(size=12, face="bold"))+theme(legend.key.size=unit(0.5,"line"))
+
+pdfName <- "HEK_figure.pdf"
+pdf(file=pdfName, width=6.5, height=9)
+plot(HEK_figure)
+dev.off()
+HEK_figure
+
+```
+

@@ -47,8 +47,8 @@ RiboCode:
 Rmd:
    metadata: "nanoRiboHEK_metadata.csv"
    modules: "Pandoc/2.5 R/3.5.1-fasrc01"
-   Rscript: "nanoRibo-Seq/scripts/compile_v3.R"
-   Rmd: "nanoRibo-Seq/scripts/LengthsCountsCov_RiboWaltz_v3.Rmd"
+   Rscript: "nanoRibo-Seq/scripts/compile_v2.r"
+   Rmd: "LengthsCountsCov_RiboWaltz_v3.Rmd"
    shell_script: "nanoRibo-Seq/scripts/separateRPbams.sh"
    R_LIBS: "/n/home12/jfroberg/R_LIBS/R_LIBS_v3.5.1"
    gtf: "/n/macklis_lab/users/jfroberg/gtfs/Homo_sapiens.GRCh38.109_chrNamed_headFix.gtf"
