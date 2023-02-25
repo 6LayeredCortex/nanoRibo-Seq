@@ -1,7 +1,7 @@
 ---
-title: "HEK_analysis"
+title: "CPN_RiboProf_interactive"
 output: html_document
-date: '2023-02-18'
+date: '2023-02-22'
 ---
 
 ###Need to edit files for HEK run.
@@ -30,15 +30,13 @@ library("xtail")
 #BiocManager::install("anota2seq")
 library("anota2seq")
 # #variables that are normally passed in from the Snakemake run:
-
-
-experimentTypeFile="nanoRibo-seq_HEK/nanoRiboHEK_metadata.csv"
-lengthCountsFile="nanoRibo-seq_HEK/dedup_lengthDistroTidy.txt"
-CDS="nanoRibo-seq_HEK/dedupBams/featureCounts_CDS_summary.txt"
-three_utr="nanoRibo-seq_HEK/dedupBams/featureCounts_three_prime_utr_summary.txt"
-five_utr="nanoRibo-seq_HEK/dedupBams/featureCounts_five_prime_utr_summary.txt"
-gtf="/n/macklis_lab/users/jfroberg/gtfs/Homo_sapiens.GRCh38.109_chrNamed_headFix.gtf"
-bamFiles="nanoRibo-seq_HEK/dedup_RPbams"
+experimentTypeFile="experimentTypesFull_single_hemi.csv"
+lengthCountsFile="dedup_lengthDistroTidy.txt"
+CDS="dedupBams/featureCounts_CDS_summary.txt"
+three_utr="dedupBams/featureCounts_three_prime_utr_summary.txt"
+five_utr="dedupBams/featureCounts_five_prime_utr_summary.txt"
+gtf="/n/macklis_lab/users/jfroberg/gtfs/Mus_musculus.GRCm38.95_chrNamed_headFix.gtf"
+bamFiles="dedup_RPbams"
 outDir="interactivePlots"
 dir.create(outDir)
 #RiboCodeFile="RiboCode_ORFs_out.txt"
@@ -59,8 +57,6 @@ ensembl_to_allGO <- as.data.frame(org.Mm.egGO2ALLEGS) %>%
 human_ensembl <- useMart("ensembl", dataset="hsapiens_gene_ensembl")
 human_gene_symbols <- getBM(attributes=c("ensembl_gene_id","external_gene_name"), mart=human_ensembl)
 human_gene_symbols_wGeneid <- human_gene_symbols %>% mutate(Geneid=ensembl_gene_id)
-
-
 ```
 
 ###Load in the metadata from the experiment types file. 
@@ -73,6 +69,9 @@ experimentTypes=read.csv(experimentTypeFile)
  descriptiveNames <- dplyr::select(descriptiveNames, samps, descriptiveNames)
  experimentTypes$Samples <- descriptiveNames$descriptiveNames
  experimentTypes
+ 
+ experimentTypes <- experimentTypes %>% group_by(exp) %>% mutate(cell_rank=rank(cells))
+ experimentTypes$Samples <- fct_reorder(experimentTypes$Samples, experimentTypes$cell_rank)
 ```
 
 ###Convert length counts to relative frequencies, add in the metadata
@@ -263,8 +262,15 @@ aboveTPM20_plot
 
 ###Plot the distribtion of rawCounts in each sample:
 ```{r plotRawDistros, echo=FALSE}
+
+# featureCounts_tidy_ranked <- featureCounts_tidy %>% dplyr::select(samps, exp, cells)  %>% distinct() %>% group_by(exp) %>% mutate(cell_rank=rank(cells)) %>% ungroup() %>% dplyr::select(samps, cell_rank) %>% left_join(featureCounts_tidy, by="samps")
+# featureCounts_tidy_ranked$Samples <- fct_reorder(featureCounts_tidy_ranked$Samples, featureCounts_tidy_ranked$cell_rank)
+
+
 rawDensity <- ggplot(featureCounts_tidy,aes(log10(counts+1),fill=Samples ))+geom_histogram(alpha=0.3,position="identity",bins=100)+JF_theme+theme(legend.position = c(0.75,0.75))+ggtitle("rawCounts_density")
 rawDensity
+
+rawPlots <- ggplot(featureCounts_tidy, aes(y=log10(counts+1), fill=cell_rank, x=Samples))+facet_wrap(~exp, scales="free_x")+geom_violin()+JF_theme+theme(legend.position="top")
 ```
 
 
@@ -317,84 +323,17 @@ filterRaw <- function(FC_tidy, threshold=10, frac_samples=1/4, experimentTypes, 
 ###In a certain fraction of samples (here, 1/4 of samples)
 ###Leave mRNA counts and date in the report, remove for the figure version for clarity.
 ```{r TPMCorrelationHeatmap}
-TPMs_filtered <- filterRaw(FC_tidy=featureCounts_tidy,threshold=10, frac_samples=1/4, experimentTypes = experimentTypes, TPMs=TPMs)
+TPMs_filtered <- filterRaw(FC_tidy=featureCounts_tidy,threshold=20, frac_samples=5/10, experimentTypes = experimentTypes, TPMs=TPMs)
 numGenesAboveThreshold <- dim(TPMs_filtered)[1]
 numGenesAboveThreshold
-cormat <- cor(dplyr::select((TPMs_filtered), -Geneid))
-experimentTypesPlus_mRNACounts <- merge(experimentTypes, total_mRNA_counts, by="Samples")
-anno <- dplyr::select(experimentTypesPlus_mRNACounts, -samps)
-rownames(anno) <- experimentTypesPlus_mRNACounts$samps
-TPM_cor_pheatmap <- pheatmap(cormat, display_numbers = T, color=colorRampPalette(brewer.pal(n=9, name="YlOrRd"))(100), annotation_col=dplyr::select(anno, -Samples), treeheight_row = 10, treeheight_col = 10, show_colnames = F, labels_col = anno$Samples, show_rownames = F, fontsize=7)
-TPM_cor_pheatmap
-anno <- dplyr::select(experimentTypesPlus_mRNACounts, -samps, -date, -mRNA_counts)
-rownames(anno) <- experimentTypesPlus_mRNACounts$samps
-TPM_cor_pheatmap_simple <- pheatmap(cormat, display_numbers = T, color=colorRampPalette(brewer.pal(n=9, name="YlOrRd"))(100), annotation_col=dplyr::select(anno, -Samples), treeheight_row = 10, treeheight_col = 10, show_colnames = F, labels_col = anno$Samples, show_rownames = F, fontsize=7)
-TPM_cor_pheatmap_simple
-```
 
+TPMs_filtered_tidy <- TPMs_filtered %>% gather(key="samps",value="TPM",-Geneid) %>% left_join(experimentTypes, by="samps")
 
-#Load the LiRiboSeq data
-```{r load_LiRiboSeq}
-Li_RiboSeq_rep1_file <- "LiRiboSeq/HTSeq_counts/GSM4594578_HEK293T_RiboSeq_rep1.18to35nt.htseq_count.txt.gz"
-Li_RiboSeq_rep2_file <- "LiRiboSeq/HTSeq_counts/GSM4594579_HEK293T_RiboSeq_rep2.18to35nt.htseq_count.txt.gz"
-Li_1kCells_rep1_file <- "LiRiboSeq/HTSeq_counts/GSM4594576_HEK293T_RFP_1kCells_rep1.18to35nt.htseq_count.txt.gz"
-Li_1kCells_rep2_file <- "LiRiboSeq/HTSeq_counts/GSM4594577_HEK293T_RFP_1kCells_rep2.18to35nt.htseq_count.txt.gz"
-Li_50kCells_rep2_file <- "LiRiboSeq/HTSeq_counts/GSM4594575_HEK293T_RFP_50kCells_rep2.18to35nt.htseq_count.txt.gz"
-Li_50kCells_rep1_file <- "LiRiboSeq/HTSeq_counts/GSM4594574_HEK293T_RFP_50kCells_rep1.18to35nt.htseq_count.txt.gz"
-
-load_LiCounts <- function(fileCell_list){
-  theFile=fileCell_list$file
-  cells=fileCell_list$cells
-  countData <- read.table(file=theFile, header=F)
-  colnames(countData) <- c("external_gene_name", "counts")
-  countData <- right_join(countData, human_gene_symbols_wGeneid, by="external_gene_name")
-  countData <- data.frame(countData, exp="RP", method=case_when(
-    grepl("Cells",theFile)==T~ "LiRiboSeq",
-    grepl("Cells",theFile)==F~ "Ingolia"), cells=cells)
-}
-
-Li_list=list(
-  "bulk_rep1"=list("file"=Li_RiboSeq_rep1_file, "cells"="bulk"),
-  "bulk_rep2"=list("file"=Li_RiboSeq_rep2_file, "cells"="bulk"),
-  "1K_rep1"=list("file"=Li_1kCells_rep1_file, "cells"="1k"),
-  "1K_rep2"=list("file"=Li_1kCells_rep2_file, "cells"="1k"),
-  "50K_rep1"=list("file"=Li_50kCells_rep1_file, "cells"="50k"),
-  "50K_rep2"=list("file"=Li_50kCells_rep2_file, "cells"="50k")
-  )
-
- LiRiboSeq_countsData_tidy <- lapply(Li_list, load_LiCounts) %>% bind_rows(.id="samps") %>% mutate(rep=str_extract(samps, regex("_.+")))
-```
-
-```{r nanoRiboVsLiRibo}
-nanoRibo_FC_tidy <- featureCounts_tidy %>% dplyr::select(samps, Geneid, counts, cells, exp, method, rep, Length) %>% mutate(cells=case_when(
-  cells==1000 ~"1k", cells==10000 ~ "10k", cells==50000 ~ "50k"
-))
-LiRiboSeq_FC_tidy <- LiRiboSeq_countsData_tidy %>% dplyr::select(samps, Geneid, counts, cells, exp, method, rep) %>% right_join(dplyr::select(nanoRibo_FC_tidy, Geneid, Length), by="Geneid") %>% distinct() %>% filter(is.na(counts)==F)
-
-nanoLi_FC_tidy <- bind_rows(nanoRibo_FC_tidy, LiRiboSeq_FC_tidy) %>% filter( (Geneid %in% LiRiboSeq_FC_tidy$Geneid)==T & (Geneid %in% nanoRibo_FC_tidy$Geneid)==T)
-nanoLi_TPMs <- calcTPM(nanoLi_FC_tidy)
-
-nanoLi_expTypes <- nanoLi_FC_tidy %>% dplyr::select(samps, cells, exp, method, rep) %>% distinct()
-
-nanoLi_TPMs_raw_filt <- filterRaw(FC_tidy=nanoLi_FC_tidy, experimentTypes = nanoLi_expTypes, TPMs=nanoLi_TPMs, frac_samples=10/12, threshold=10)
-```
-
-
-```{r nanoVsLi_heatmaps}
-
-makeCormat <- function(TPMs_tidy) {
+makeCorePheatmaps <- function(TPMs_tidy, displayNums=T, mainTitle="heatmap", w=6.5, h=5) {
   #Take in a TPMs_tidy frame, and make a correlation heatmap with stage, region, strain as annotations.
   TPMs_mat <- TPMs_tidy %>% dplyr::select(Geneid, samps, TPM) %>% spread(key="samps",value="TPM")
-  anno <- TPMs_tidy %>% dplyr::select(samps, cells, exp, method) %>% group_by(samps, cells, exp, method) %>% summarize(n=n()) %>% dplyr::select(-n)
-  cormat <- cor(log10(dplyr::select(TPMs_mat, -Geneid)+1))
-  return(cormat)
-}
-
-makeCorePheatmaps <- function(TPMs_tidy, displayNums=T, mainTitle="heatmap", w=6.5, h=3.5) {
-  #Take in a TPMs_tidy frame, and make a correlation heatmap with stage, region, strain as annotations.
-  TPMs_mat <- TPMs_tidy %>% dplyr::select(Geneid, samps, TPM) %>% spread(key="samps",value="TPM")
-  anno <- TPMs_tidy %>% dplyr::select(samps, cells, method) %>% group_by(samps, cells, method) %>% summarize(n=n()) %>% dplyr::select(-n)
-  cormat <- cor(log10(dplyr::select(TPMs_mat, -Geneid)+1), method="pearson")
+  anno <- TPMs_tidy %>% dplyr::select(samps, cells, exp) %>% group_by(samps, cells, exp) %>% distinct() %>% group_by(exp) %>% mutate(cell_rank=rank(cells))
+  cormat <- cor(log10(dplyr::select(TPMs_mat, -Geneid)+1), method="spearman")
   #return(rownames(cormat))
   # anno <- data.frame(anno)
   # rownames(anno) <- anno$samps
@@ -406,20 +345,13 @@ makeCorePheatmaps <- function(TPMs_tidy, displayNums=T, mainTitle="heatmap", w=6
    } else {
     stop("rownames(cormat) is not equal to samp names. Samps not sorted correctly")
    }
-  thePheatmap <- pheatmap(cormat, annotation_col=anno, display_numbers = displayNums, font_size=8, fontsize_number = 5, main=mainTitle, breaks=seq(0.7,1,by=0.01), width=w, height=h, cex=0.5, show_colnames = F, treeheight_col = 10, treeheight_row = 10, color = colorRampPalette(rev(brewer.pal(n = 7, name =
-  "RdYlBu")))(30))
+  thePheatmap <- pheatmap(cormat, annotation_col=anno, display_numbers = displayNums, main=mainTitle, breaks=seq(0.5,1,by=0.01), width=w, height=h, cex=0.5, show_colnames = F, treeheight_col = 10, treeheight_row = 10, color = colorRampPalette(rev(brewer.pal(n = 7, name =
+  "RdYlBu")))(50))
 }
 
-nanoLi_TPMs_tidy_filt <- nanoLi_TPMs_raw_filt %>% gather(key="samps",value="TPM", -Geneid) %>% left_join(nanoLi_expTypes, by="samps")
-#make sampNames more descriptive
-nanoLi_TPMs_tidy_filt_newSamps <- nanoLi_TPMs_tidy_filt %>% mutate(samps=case_when(
-  method=="Ingolia" | method=="LiRiboSeq" ~ paste(method, samps, sep="_"),
-  method=="nanoRibo-seq" ~ paste("nanoRibo_", cells, rep, sep="")
-))
-nanoVsLi_pheatmap <- makeCorePheatmaps(nanoLi_TPMs_tidy_filt_newSamps, mainTitle="method correlations", displayNums = T)
+CPN_single_hemi_corpHeat <-makeCorePheatmaps(TPMs_filtered_tidy, displayNums = F, w=6.5,h=5)
 
 ```
-
 
 ###Run RiboWaltz to evaluate 3-nt periodicity in the data sets. 
 ###Requires a directory of transcriptome-aligned BamFiles and a gtf
@@ -518,10 +450,11 @@ psite_dt_raw <- merge(psite_dt_raw, psite_region_sums, by=c("sample","reg"))
 psite_dt_raw <- psite_dt_raw %>%
   mutate(freq=reads/region_sum) %>% 
   mutate(Samples=sample)
-titration_metadata <- dplyr::select(experimentTypes, Samples, exp, date, cells) %>% filter(exp=="RP")
+titration_metadata <- dplyr::select(experimentTypes, Samples, exp, date, cells, cell_rank) %>% filter(exp=="RP")
 psite_dt_raw <- merge(psite_dt_raw, titration_metadata, by="Samples")
-psite_dt_raw <- psite_dt_raw %>%
-  mutate(Samples= fct_reorder(Samples,as.numeric(cells), .desc=F))
+psite_dt_raw$sample <- fct_reorder(psite_dt_raw$sample, psite_dt_raw$cell_rank)
+#psite_dt_raw <- psite_dt_raw %>%
+#  mutate(Samples= fct_reorder(Samples,as.numeric(cells), .desc=F))
 #psite_dt_raw <- merge(psite_dt_raw, dplyr::filter(experimentTypes, Samples, exp_date), by="Samples")
 psite_freqHeat <- ggplot(psite_dt_raw, aes(x=distance,fill=freq,y=sample))+geom_tile()+facet_wrap(~reg)+scale_fill_gradient(low="white", high="black")+JF_theme+xlab("distance from start or stop (nt)")+ylab("")+xlab("")+theme(legend.position="bottom")
 psite_freqHeat
@@ -571,20 +504,20 @@ plot(psiteFreq)
 dev.off()
 psiteFreq
 ```
-```{r HEK_figure}
-HEK_samp_labels <- c("1k cells, rep A", "10k cells, rep A","50k cells, rep A","1k cells, rep B", "10k cells, rep B","50k cells, rep B") 
-# HEK_figure <-  CDS_riboProf_colored + (rpkm_byRegion_plot+scale_x_discrete(labels=HEK_samp_labels)) + (psite_freqHeat + scale_y_discrete(labels=HEK_samp_labels)+theme(legend.position = "top")) + (psiteFreq +scale_x_discrete(labels=HEK_samp_labels)) + (as.ggplot(nanoVsLi_pheatmap))+plot_annotation(tag_levels = list(c("A","B","C","D","E"))) & theme(plot.tag=element_text(size=12, face="bold"))+theme(legend.key.size=unit(0.5,"line"))
+```{r CPN_single_hemi_figure}
 
+x_labels <- experimentTypes %>% arrange(desc(cell_rank)) %>% filter(exp=="RP")
+x_labels <- x_labels$cells
 
+CPN_hemi_figure <- (CDS_riboProf+theme(legend.position = "top")+scale_color_discrete(labels=x_labels) | (rpkm_byRegion_plot+scale_x_discrete(labels=x_labels))) /  ( psiteFreq+scale_x_discrete(labels=x_labels) | (rawPlots ))/ as.ggplot(CPN_single_hemi_corpHeat)+plot_layout( heights=c(2,2,5))+plot_annotation(tag_levels = list(c("A","B","C","D","E","F"))) & theme(plot.tag=element_text(size=12, face="bold"))+theme(legend.key.size=unit(0.5,"line"))
 
-
-HEK_figure <-  (CDS_riboProf_colored | rpkm_byRegion_plot+scale_x_discrete(labels=HEK_samp_labels)) / (psite_freqHeat + scale_y_discrete(labels=HEK_samp_labels)+theme(legend.position = "top") | psiteFreq +scale_x_discrete(labels=HEK_samp_labels)) / as.ggplot(nanoVsLi_pheatmap, scale=1.1) / plot_spacer()+plot_layout( heights=c(2,2,4,1))+plot_annotation(tag_levels = list(c("A","B","C","D","E"))) & theme(plot.tag=element_text(size=12, face="bold"))+theme(legend.key.size=unit(0.5,"line"))
-
-pdfName <- "HEK_figure.pdf"
+pdfName <- "CPN_hemi_figure.pdf"
 pdf(file=pdfName, width=6.5, height=9)
-plot(HEK_figure)
+plot(CPN_hemi_figure)
 dev.off()
-HEK_figure
+CPN_hemi_figure
+
 
 ```
+
 

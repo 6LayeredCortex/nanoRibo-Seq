@@ -520,7 +520,7 @@ RPvsAF_scatterplot
 
 TE_CPNvsSCPN_df <- subtypeComparison_res_df %>% filter(contrast %in% c("TE_CPN","TE_SCPN") & is.na(padj)==F) %>% dplyr::select(Geneid, log2FoldChange, contrast) %>% spread(key="contrast",value=log2FoldChange) %>% left_join(res_diffTE_df, by="Geneid") %>% dplyr::select(Geneid, TE_CPN, TE_SCPN, diffTE_sig) %>% left_join(dplyr::select(res_TE_SCPN_df, Geneid, TE_SCPN_sig), by="Geneid") %>% left_join(dplyr::select(res_TE_CPN_df, Geneid, TE_CPN_sig), by="Geneid")
 
-TE_CPNvsSCPN_scatterplot <- ggplot(TE_CPNvsSCPN_df, aes(x=TE_CPN,y=TE_SCPN, color=diffTE_sig))+JF_theme+geom_point(alpha=0.5, size=0.2)+geom_hline(yintercept=0)+geom_vline(xintercept=0)+scale_color_manual(values=c("red","blue","black","grey"))+xlab("TE in CPN")+ylab("TE in SCPN")+ggtitle(paste("Pearson's R=",round(cor(TE_CPNvsSCPN_df$TE_CPN,TE_CPNvsSCPN_df$TE_SCPN,method="pearson"),3)))+theme(legend.position = c(0.85, 0.3), legend.key.size = unit(0.5,"line"))
+TE_CPNvsSCPN_scatterplot <- ggplot(TE_CPNvsSCPN_df, aes(x=TE_CPN,y=TE_SCPN, color=diffTE_sig))+JF_theme+geom_point(alpha=1, size=0.2)+geom_hline(yintercept=0)+geom_vline(xintercept=0)+scale_color_manual(values=c("red","blue","grey","grey"))+xlab("TE in CPN")+ylab("TE in SCPN")+ggtitle(paste("Pearson's R=",round(cor(TE_CPNvsSCPN_df$TE_CPN,TE_CPNvsSCPN_df$TE_SCPN,method="pearson"),3)))+theme(legend.position = c(0.85, 0.3), legend.key.size = unit(0.5,"line"))
 TE_CPNvsSCPN_scatterplot
 
 TE_CPNvsSCPN_scatterplot_TE_CPN_sig_colored <- ggplot(TE_CPNvsSCPN_df, aes(x=TE_CPN,y=TE_SCPN, color=TE_CPN_sig))+JF_theme+geom_point(alpha=0.5, size=0.2)+geom_hline(yintercept=0)+geom_vline(xintercept=0)+scale_color_manual(values=c("red","blue","black","grey"))+xlab("TE in CPN")+ylab("TE in SCPN")+ggtitle("T.E. in SCPN vs. T.E. in CPN, skewed TE in CPN highlighted ")+theme(legend.position = c(0.85, 0.3), legend.key.size = unit(0.5,"line"))
@@ -908,7 +908,7 @@ sim_mRNA0_TE0_b0_i0_res <- injection2DESeq_res(sim_mRNA200_TE10_b0_i0)
 
 plot_diffTE_from_injection <- function(res) {
   res_filt <- res %>% filter(contrast=="n1v2" | contrast=="diffTE") 
-    MAplot <- ggplot(res_filt, aes(x=log10(baseMean),y=log2FoldChange,color=is.na(TP)))+JF_theme+facet_wrap(~contrast)+geom_point(size=0.2, alpha=0.5)+theme(legend.position = "top")+scale_color_manual(values=c("red","black"))
+    MAplot <- ggplot(res_filt, aes(x=log10(baseMean),y=log2FoldChange,color=is.na(TP)))+JF_theme+facet_wrap(~contrast)+geom_point(size=0.2, alpha=0.5)+theme(legend.position = "top")+scale_color_manual(values=c("red","grey"))
 }
 
 sim_mRNA4000_TE40_b40_i40_injection_MAplots <- plot_diffTE_from_injection(sim_mRNA4000_TE40_b40_i40_res$full_res)
@@ -1141,6 +1141,11 @@ sim_results_fig <- (sim_mRNA4000_TE40_b40_i40_injection_MAplots + sim2_mRNA4000_
 (sim_mRNA800_TE40_b40_i40_injection_MAplots + sim2_mRNA800_TE40_b40_i40_injection_MAplots) / ((mRNA800_40TE_40b_40i_PR_comp_plot | sim2_mRNA800_40TE_40b_40i_PR_comp_plot)+plot_layout(guides="collect")) +theme(text=element_text("ArialMT")) + plot_annotation(tag_levels = list(c("A","B","C","D","E","F","G","H"))) & theme(plot.tag=element_text(size=12, face="bold"))
 
 
+pdfName=paste(outDir, "sim_res_fig.pdf", sep="/")
+pdf(file=pdfName, width=6.5, height=9)
+plot(sim_results_fig)
+dev.off()
+
 ```
 
 
@@ -1176,7 +1181,7 @@ SCPN_RPF <- (subtypeComparison_res_df %>% filter(RP_sig == "higher"))$Geneid
 CPN_RPF <- (subtypeComparison_res_df %>% filter(RP_sig == "lower"))$Geneid
 
 CPN_SCPN_TE_upset_list <- list("CPN_high"=CPN_TE_high, "CPN_low"=CPN_TE_low, "SCPN_high"=SCPN_TE_high, "SCPN_low"=SCPN_TE_low)
-CPN_SCPN_TE_upset <- upset(fromList(CPN_SCPN_TE_upset_list), order.by="freq")
+CPN_SCPN_TE_upset <- upset(fromList(CPN_SCPN_TE_upset_list), order.by="freq", text.scale=2.67)
 CPN_SCPN_TE_upset 
 
 SCPN_CPN_AF_RP_upset_list <- list("SCPN_mRNA"=SCPN_mRNA, "CPN_mRNA"=CPN_mRNA, "SCPN_RPF"=SCPN_RPF, "CPN_RPF"=CPN_RPF)
@@ -1184,14 +1189,16 @@ SCPN_CPN_AF_RP_upset <- upset(fromList(SCPN_CPN_AF_RP_upset_list), order.by="fre
 SCPN_CPN_AF_RP_upset 
 
 diffTE_upset_list <- list("SCPN_TE"=SCPNvsCPN_TE_higher, "CPN_TE"=SCPNvsCPN_TE_lower, "SCPN_mRNA"=SCPN_mRNA, "CPN_mRNA"=CPN_mRNA, "SCPN_RPF"=SCPN_RPF, "CPN_RPF"=CPN_RPF )
-diffTE_upset <- upset(fromList(diffTE_upset_list), keep.order = T, nsets=length(diffTE_upset_list))
+diffTE_upset <- upset(fromList(diffTE_upset_list), keep.order = T, nsets=length(diffTE_upset_list), text.scale = 2)
 diffTE_upset 
 diffTE_focus_list <- list(list("SCPN_TE","SCPN_mRNA"),list("SCPN_TE","SCPN_RPF"),
                           list("SCPN_TE","CPN_mRNA"),list("SCPN_TE","CPN_RPF"),
                           list("CPN_TE","CPN_mRNA"),list("CPN_TE","CPN_RPF"),
                           list("CPN_TE","SCPN_mRNA"),list("CPN_TE","SCPN_RPF"),
                           list("CPN_TE","SCPN_mRNA","CPN_RPF"), list("SCPN_TE","SCPN_RPF","SCPN_mRNA"),list("CPN_TE","CPN_RPF","CPN_mRNA"), list("SCPN_TE","CPN_mRNA","SCPN_RPF"))
-diffTE_upset_TE_focus <- upset(fromList(diffTE_upset_list), order.by = "freq",intersections=diffTE_focus_list)
+diffTE_upset_TE_focus <- upset(fromList(diffTE_upset_list), order.by = "freq",intersections=diffTE_focus_list, text.scale=2)
+diffTE_upset_TE_focus 
+
 
 
 subtypeComp_GO_list <- list("SCPN_vsCPN_TEhigher"=SCPNvsCPN_TE_higher,"SCPN_vsCPN_TElower"=SCPNvsCPN_TE_lower,
@@ -1237,6 +1244,9 @@ TE_SCPN_lower_barplot
 
 subtypesComp_Figure_upsetSpacers <- as.ggplot(TPM_cor_pheatmap_simpler) / (RPvsAF_scatterplot | mRNA_MAplot | RPF_MAplot ) / (TE_MAplot + TE_CPNvsSCPN_scatterplot) /(plot_spacer()+plot_spacer())+theme(text=element_text("ArialMT")) + plot_annotation(tag_levels = list(c("A","B","C","D","E","F","G","H"))) & theme(plot.tag=element_text(size=12, face="bold"))+theme(legend.key.size=unit(0.5,"line"))
 
+
+
+
 pdfName=paste(outDir, "SubtypeComparison_fig.pdf", sep="/")
 pdf(file=pdfName, width=6.5, height=9)
 plot(subtypesComp_Figure_upsetSpacers)
@@ -1244,7 +1254,7 @@ dev.off()
 
 
 
-withinSubtypeTE <- (plot_spacer()| TE_CPNvsSCPN_scatterplot_TE_CPN_sig_colored | TE_CPNvsSCPN_scatterplot_TE_SCPN_sig_colored) /(TE_CPN_higher_barplot + TE_CPN_lower_barplot) / (TE_SCPN_higher_barplot + TE_SCPN_lower_barplot) / (plot_spacer() | plot_spacer()) /(plot_spacer() | plot_spacer())
+withinSubtypeTE <- (plot_spacer()| TE_CPNvsSCPN_scatterplot_TE_CPN_sig_colored | TE_CPNvsSCPN_scatterplot_TE_SCPN_sig_colored) /(TE_CPN_higher_barplot + TE_CPN_lower_barplot) / (TE_SCPN_higher_barplot + TE_SCPN_lower_barplot) / (plot_spacer() | plot_spacer()) /(plot_spacer() | plot_spacer()) + plot_annotation(tag_levels = list(c("A","B","C","D","E","F","G","H","I","J","K"))) & theme(plot.tag=element_text(size=12, face="bold"))+theme(legend.key.size=unit(0.5,"line"))
 
 pdfName=paste(outDir, "withinSubtypeTE_fig.pdf", sep="/")
 pdf(file=pdfName, width=6.5, height=9)
@@ -1395,39 +1405,12 @@ TE_CPN_uORF_byQuntile_plot <- ggplot(res_TE_CPN_df, aes(x=log2FoldChange, color=
 
 ```
 
-```{r ribotricer_uORFs}
-RT_CPN_file <- "CPN_RiboCode/ribotracer_detected_ORFs_translating_ORFs.tsv"
-RT_SCPN_file <- "SCPN_RiboCode/ribotracer_detected_ORFs_translating_ORFs.tsv"
-
-RT_CPN <- read.table(RT_CPN_file,header=T, sep="\t")
-
-collapse_ribotricer <- function(RT) {
-  ###Take in a ribotricer file, split ORF_ID into its fields, append gene_name 
-  ##and collapse ORFs with the same stop codon or stop condon, take the ORF with the longest length
-  RT_collapsed <- RT %>% 
-    separate(col=ORF_ID, sep="_", into=c("tx_id","start","stop","obs_length"), remove=F) %>%
-    mutate(ORF_by_geneid=case_when(
-      strand=="+" ~ paste(gene_id,start,stop,obs_length, sep="_"),
-      strand=="-" ~ paste(gene_id,stop,start,obs_length, sep="_"))) %>%
-    group_by(gene_id, ORF_type, start) %>% top_n(1,wt=length) %>%
-    group_by(gene_id, ORF_type, stop) %>% top_n(1,wt=length)
-}
-
-test <- collapse_ribotricer(RT_CPN)
-
-```
-
-
-
 ```{r uORFs_figure}
-
-uORFs_figure <- ORF_types_plot / (TE_CPN_uORF_plot + TE_SCPN_uORF_plot) / (uORF_ego_barplot$CPN_uORFs + uORF_ego_barplot$SCPN_uORFs) / (synapse_assembly_TE_plots$CPN_plot + synapse_assembly_TE_plots$SCPN_plot) / plot_spacer()
-
+uORFs_figure <- ORF_types_plot / (TE_CPN_uORF_plot + TE_SCPN_uORF_plot) / (uORF_ego_barplot$CPN_uORFs + uORF_ego_barplot$SCPN_uORFs) / (synapse_assembly_TE_plots$CPN_plot + synapse_assembly_TE_plots$SCPN_plot) + plot_annotation(tag_levels = list(c("A","B","C","D","E","F","G","H"))) & theme(plot.tag=element_text(size=12, face="bold"))+theme(legend.key.size=unit(0.5,"line"))
 pdfName=paste(outDir, "uORF_fig.pdf", sep="/")
 pdf(file=pdfName, width=6.5, height=9)
 plot(uORFs_figure)
 dev.off()
-
 ```
 
 ###Run RiboWaltz to evaluate 3-nt periodicity in the data sets. 
