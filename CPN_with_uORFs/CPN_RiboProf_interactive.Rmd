@@ -323,7 +323,7 @@ filterRaw <- function(FC_tidy, threshold=10, frac_samples=1/4, experimentTypes, 
 ###In a certain fraction of samples (here, 1/4 of samples)
 ###Leave mRNA counts and date in the report, remove for the figure version for clarity.
 ```{r TPMCorrelationHeatmap}
-TPMs_filtered <- filterRaw(FC_tidy=featureCounts_tidy,threshold=20, frac_samples=5/10, experimentTypes = experimentTypes, TPMs=TPMs)
+TPMs_filtered <- filterRaw(FC_tidy=featureCounts_tidy,threshold=10, frac_samples=8/10, experimentTypes = experimentTypes, TPMs=TPMs)
 numGenesAboveThreshold <- dim(TPMs_filtered)[1]
 numGenesAboveThreshold
 
@@ -333,23 +333,25 @@ makeCorePheatmaps <- function(TPMs_tidy, displayNums=T, mainTitle="heatmap", w=6
   #Take in a TPMs_tidy frame, and make a correlation heatmap with stage, region, strain as annotations.
   TPMs_mat <- TPMs_tidy %>% dplyr::select(Geneid, samps, TPM) %>% spread(key="samps",value="TPM")
   anno <- TPMs_tidy %>% dplyr::select(samps, cells, exp) %>% group_by(samps, cells, exp) %>% distinct() %>% group_by(exp) %>% mutate(cell_rank=rank(cells))
-  cormat <- cor(log10(dplyr::select(TPMs_mat, -Geneid)+1), method="spearman")
+  cormat <- cor(log10(dplyr::select(TPMs_mat, -Geneid)+1), method="pearson")
   #return(rownames(cormat))
   # anno <- data.frame(anno)
   # rownames(anno) <- anno$samps
   L <- rownames(cormat) == anno$samps
   if (all(L)==T) {
     anno <- data.frame(anno)
+    #rownames(anno) <- as.character(anno$cells)
     rownames(anno) <- anno$samps
+    #rownames(anno) <- paste(anno$exp, anno$cells)
     anno <- dplyr::select(anno, -samps)
    } else {
     stop("rownames(cormat) is not equal to samp names. Samps not sorted correctly")
    }
-  thePheatmap <- pheatmap(cormat, annotation_col=anno, display_numbers = displayNums, main=mainTitle, breaks=seq(0.5,1,by=0.01), width=w, height=h, cex=0.5, show_colnames = F, treeheight_col = 10, treeheight_row = 10, color = colorRampPalette(rev(brewer.pal(n = 7, name =
+  thePheatmap <- pheatmap(cormat, annotation_col=anno, display_numbers = displayNums, main=mainTitle, fontsize_number = 6, breaks=seq(0.5,1,by=0.01), width=w, height=h, cex=0.5, show_colnames = F, treeheight_col = 10, treeheight_row = 10, color = colorRampPalette(rev(brewer.pal(n = 7, name =
   "RdYlBu")))(50))
 }
 
-CPN_single_hemi_corpHeat <-makeCorePheatmaps(TPMs_filtered_tidy, displayNums = F, w=6.5,h=5)
+CPN_single_hemi_corpHeat <-makeCorePheatmaps(TPMs_filtered_tidy, displayNums = T, w=6.5,h=5)
 
 ```
 

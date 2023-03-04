@@ -914,11 +914,11 @@ plot_diffTE_from_injection <- function(res) {
 sim_mRNA4000_TE40_b40_i40_injection_MAplots <- plot_diffTE_from_injection(sim_mRNA4000_TE40_b40_i40_res$full_res)
 sim2_mRNA4000_TE40_b40_i40_injection_MAplots <- plot_diffTE_from_injection(sim2_mRNA4000_TE40_b40_i40_res$full_res)
 
-sim_mRNA800_TE40_b40_i40_injection_MAplots <- plot_diffTE_from_injection(sim_mRNA800_TE40_b40_i40_res$full_res)+ggtitle("sim1, mRNA800, TE 40, buffered 40, intensified 40 MAplot")
-sim2_mRNA800_TE40_b40_i40_injection_MAplots <- plot_diffTE_from_injection(sim2_mRNA800_TE40_b40_i40_res$full_res)+ggtitle("sim2, mRNA4000, TE 40, buffered 40, intensified 40 P vs R")
+sim_mRNA800_TE40_b40_i40_injection_MAplots <- plot_diffTE_from_injection(sim_mRNA800_TE40_b40_i40_res$full_res)+ggtitle("sim1, mRNA800, \nTE 40, buffered 40, intensified 40")
+sim2_mRNA800_TE40_b40_i40_injection_MAplots <- plot_diffTE_from_injection(sim2_mRNA800_TE40_b40_i40_res$full_res)+ggtitle("sim2, mRNA4000, \nTE 40, buffered 40, intensified 40")
 
-sim_mRNA4000_TE40_b40_i40_injection_MAplots <- plot_diffTE_from_injection(sim_mRNA4000_TE40_b40_i40_res$full_res)+ggtitle("sim1, mRNA4000, TE 40, buffered 40, intensified 40 MAplot")
-sim2_mRNA4000_TE40_b40_i40_injection_MAplots <- plot_diffTE_from_injection(sim2_mRNA4000_TE40_b40_i40_res$full_res)+ggtitle("sim2, mRNA4000, TE 40, buffered 40, intensified 40 P vs R")
+sim_mRNA4000_TE40_b40_i40_injection_MAplots <- plot_diffTE_from_injection(sim_mRNA4000_TE40_b40_i40_res$full_res)+ggtitle("sim1, mRNA4000, \nTE 40, buffered 40, intensified 40")
+sim2_mRNA4000_TE40_b40_i40_injection_MAplots <- plot_diffTE_from_injection(sim2_mRNA4000_TE40_b40_i40_res$full_res)+ggtitle("sim2, mRNA4000, \nTE 40, buffered 40, intensified 40")
 ```
 
 ```{r xtail_on_sim}
@@ -1125,14 +1125,14 @@ compare_PR_curves <- function(PRlist) {
 }
 
 mRNA4000_40TE_40b_40i_ROC_df <- compare_ROCs(mRNA4000_40TE_40b_40i_ROC_list)
-mRNA4000_40TE_40b_40i_PR_comp_plot <- compare_PR_curves(mRNA4000_40TE_40b_40i_PR_list)+ggtitle("sim1, mRNA4000, TE 40, buffered 40, intensified 40 P vs R")
+mRNA4000_40TE_40b_40i_PR_comp_plot <- compare_PR_curves(mRNA4000_40TE_40b_40i_PR_list)+ggtitle("sim1, mRNA4000, \nTE 40, buffered 40, intensified 40 \nP vs R")
 mRNA4000_40TE_40b_40i_ROC_plot <- ggplot(mRNA4000_40TE_40b_40i_ROC_df, aes(x=1-specificity, y=sensitivity, color=ROC_name))+JF_theme+geom_line()+xlab("False Positive Rate")+ylab("True Positive Rate")+geom_abline(slope=1, intercept=0)
 mRNA800_40TE_40b_40i_ROC_df <- compare_ROCs(mRNA800_40TE_40b_40i_ROC_list)
-mRNA800_40TE_40b_40i_PR_comp_plot <- compare_PR_curves(mRNA800_40TE_40b_40i_PR_list)+ggtitle("sim1, mRNA4000, TE 40, buffered 40, intensified 40 P vs R")
+mRNA800_40TE_40b_40i_PR_comp_plot <- compare_PR_curves(mRNA800_40TE_40b_40i_PR_list)+ggtitle("sim1, mRNA4000, \nTE 40, buffered 40, intensified 40 \nP vs R")
 mRNA800_40TE_40b_40i_ROC_plot <- ggplot(mRNA800_40TE_40b_40i_ROC_df, aes(x=1-specificity, y=sensitivity, color=ROC_name))+JF_theme+geom_line()+xlab("False Positive Rate")+ylab("True Positive Rate")+geom_abline(slope=1, intercept=0)
 
-sim2_mRNA800_40TE_40b_40i_PR_comp_plot <- compare_PR_curves(sim2_mRNA800_40TE_40b_40i_PR_list)+ggtitle("sim2, mRNA800, TE 40, buffered 40, intensified 40 P vs R")
-sim2_mRNA4000_40TE_40b_40i_PR_comp_plot <- compare_PR_curves(sim2_mRNA4000_40TE_40b_40i_PR_list)+ggtitle("sim2, mRNA4000, TE 40, buffered 40, intensified 40 P vs R")
+sim2_mRNA800_40TE_40b_40i_PR_comp_plot <- compare_PR_curves(sim2_mRNA800_40TE_40b_40i_PR_list)+ggtitle("sim2, mRNA800, \nTE 40, buffered 40, intensified 40 \nP vs R")
+sim2_mRNA4000_40TE_40b_40i_PR_comp_plot <- compare_PR_curves(sim2_mRNA4000_40TE_40b_40i_PR_list)+ggtitle("sim2, mRNA4000, \nTE 40, buffered 40, intensified 40 \nP vs R")
 
 ```
 
@@ -1281,7 +1281,26 @@ uORF_res <- filter(ORF_res, ORF_type=="uORF" | ORF_type=="Overlap_uORF")
 
 ORF_types_plot <- ggplot(ORF_type_counts, aes(x=ORF_type, y=ORF_count, fill=ORF_type, label=ORF_count))+JF_theme+geom_col()+geom_text()+facet_wrap(~subtype)+theme(axis.text.x = element_text(angle = 45, hjust=1))+theme(legend.position = "none")
 
+uORF_shared <- intersect(filter(uORF_res, ORF_type=="uORF" & subtype=="CPN")$ORF_ID, filter(uORF_res, ORF_type=="uORF" & subtype=="SCPN")$ORF_ID)
+Overlap_uORF_shared <-  intersect(filter(uORF_res, ORF_type=="Overlap_uORF" & subtype=="CPN")$ORF_ID, filter(uORF_res, ORF_type=="Overlap_uORF" & subtype=="SCPN")$ORF_ID)
+uORF_shared_Geneids <- filter(uORF_res, ORF_ID %in% uORF_shared)
+uORF_shared_Geneids <- unique(uORF_shared_Geneids$gene_id)
+Overlap_uORF_shared_Geneids <- filter(uORF_res, ORF_ID %in% Overlap_uORF_shared)
+Overlap_uORF_shared_Geneids <- unique(Overlap_uORF_shared_Geneids$gene_id)
 
+
+uORF_res_shared <- uORF_res %>% mutate(shared_status=case_when(
+  ORF_type == "uORF" & ORF_ID %in% uORF_shared ~ "shared",
+  ORF_type == "Overlap_uORF" & ORF_ID %in% Overlap_uORF_shared ~ "shared",
+  ORF_type == "uORF" & (ORF_ID %in% uORF_shared)==F & subtype=="CPN" ~ "CPN only",
+  ORF_type == "uORF" & (ORF_ID %in% uORF_shared)==F & subtype=="SCPN" ~ "SCPN only",
+  ORF_type == "Overlap_uORF" & (ORF_ID %in% Overlap_uORF_shared)==F & subtype=="CPN" ~ "CPN only",
+  ORF_type == "Overlap_uORF" & (ORF_ID %in% uORF_shared)==F & subtype=="SCPN" ~ "SCPN only"
+  )) %>% group_by(ORF_type, shared_status) %>% summarize(count=n())
+#divide shared counts by 2 to avoid double count. 
+uORF_res_shared[uORF_res_shared$shared_status=="shared",]$count <- uORF_res_shared[uORF_res_shared$shared_status=="shared",]$count/2
+
+uORF_shared_col_plot <- ggplot(uORF_res_shared, aes(x=ORF_type, y=count, fill=shared_status))+geom_col(position="stack")+JF_theme+theme(axis.text.x = element_text(angle = 45, hjust=1))
 ###Overlap between CPN and SCPN is a bit lower than I expected. Tried re-runing RiboCode with a more stringent pval (0.01 vs 0.05)
 ###Still low. I wonder a bit if this might be because a decent % of uORFs are in genes that are differentially expressed between subtypes.
 
@@ -1316,13 +1335,15 @@ uORF_geneID_upset <- upset(fromList(uORF_geneID_list))
 uORF_geneID_upset
 
 uORF_GO_list <- list("CPN_uORFs" = filter(ORF_res, (ORF_type=="uORF"| ORF_type=="Overlap_uORF" ) & subtype=="CPN")$gene_id,
-                     "SCPN_uORFs"= filter(ORF_res, (ORF_type=="uORF"| ORF_type=="Overlap_uORF" ) & subtype=="SCPN")$gene_id)
+                     "SCPN_uORFs"= filter(ORF_res, (ORF_type=="uORF"| ORF_type=="Overlap_uORF" ) & subtype=="SCPN")$gene_id,
+                     "uORF_shared"=unique(filter(ORF_res, (ORF_ID %in% uORF_shared)==T | (ORF_ID %in% Overlap_uORF_shared)==T)$gene_id))
 uORF_ego_raw <- lapply(uORF_GO_list, run_enrichGO_raw_output)
 
 ###See the strong enrichment for "synapse and structure" genes seen previously.
 uORF_ego_barplot <- lapply(uORF_ego_raw, barplot, showCategory=5,font.size=7, label_format=24)
 uORF_ego_barplot$CPN_uORFs <- uORF_ego_barplot$CPN_uORFs+theme(legend.position = "top")+ggtitle("top GO terms, CPN")+JF_theme
 uORF_ego_barplot$SCPN_uORFs <- uORF_ego_barplot$SCPN_uORFs+theme(legend.position = "top")+ggtitle("top GO terms uORFs, SCPN")+JF_theme
+uORF_ego_barplot$uORF_shared <- uORF_ego_barplot$uORF_shared+ggtitle("top GO terms CPN, SCPN shared uORFs")+JF_theme
 
 
 
@@ -1346,17 +1367,19 @@ res_TE_CPN_df <- res_TE_CPN_df %>% mutate(uORF_status=case_when(
   Geneid %in% filter(uORF_res, subtype=="CPN" & ORF_type=="uORF")$gene_id ~ "CPN_uORF",
   Geneid %in% filter(uORF_res, subtype=="CPN" & ORF_type=="Overlap_uORF")$gene_id ~ "CPN_Overlap_uORF",
   T ~ "no_uORF"
-)) %>% mutate(uORF_simple=case_when(
-  uORF_status != "no_uORF" ~ "uORF",
-  uORF_status == "no_uORF" ~ "no_uORF",
+)) %>% mutate(uORF_shared=case_when(
+  (Geneid %in% uORF_shared_Geneids)==T ~ "uORF",
+  (Geneid %in% Overlap_uORF_shared_Geneids)==T ~ "Overlap_uORF",
+  T ~ "no_shared_uORF"
 ))
 res_TE_SCPN_df <- res_TE_SCPN_df %>% mutate(uORF_status=case_when(
   Geneid %in% filter(uORF_res, subtype=="SCPN" & ORF_type=="uORF")$gene_id ~ "SCPN_uORF",
     Geneid %in% filter(uORF_res, subtype=="SCPN" & ORF_type=="Overlap_uORF")$gene_id ~ "SCPN_Overlap_uORF",
   T ~ "no_uORF"
-)) %>% mutate(uORF_simple=case_when(
-  uORF_status != "no_uORF" ~ "uORF",
-  uORF_status == "no_uORF" ~ "no_uORF",
+)) %>% mutate(uORF_shared=case_when(
+  (Geneid %in% uORF_shared_Geneids)==T ~ "uORF",
+  (Geneid %in% Overlap_uORF_shared_Geneids)==T ~ "Overlap_uORF",
+  T ~ "no_shared_uORF"
 ))
 res_diffTE_df <- res_diffTE_df %>% mutate(uORF_status=case_when(
   (Geneid %in% filter(uORF_res, subtype=="CPN" & ORF_type=="uORF")$gene_id==T) & (Geneid %in% filter(uORF_res, subtype=="SCPN" & ORF_type=="uORF")$gene_id==F) ~ "CPN_uORF",
@@ -1370,19 +1393,34 @@ res_diffTE_df <- res_diffTE_df %>% mutate(uORF_status=case_when(
 
 TE_CPN_uORF_plot <- ggplot(res_TE_CPN_df, aes(x=log2FoldChange, color=uORF_status))+JF_theme+stat_ecdf(size=0.1)+facet_wrap(~contrast)+xlim(c(-2,2))+ylab("cumulative_fraction")+ggtitle("T.E. by uORF status, CPN")+xlab("T.E.")+theme(legend.position="top")+geom_hline(yintercept=0.5,size=0.2)+geom_vline(xintercept=0, size=0.2)
 TE_CPN_uORF_plot
+
+
+TE_CPN_shared_uORF_plot <- ggplot(res_TE_CPN_df, aes(x=log2FoldChange, color=uORF_shared))+JF_theme+stat_ecdf(size=0.1)+facet_wrap(~contrast)+xlim(c(-2,2))+ylab("cumulative_fraction")+ggtitle("T.E. by uORF status, CPN")+xlab("T.E.")+theme(legend.position="top")+geom_hline(yintercept=0.5,size=0.2)+geom_vline(xintercept=0, size=0.2)
+TE_CPN_shared_uORF_plot
+
 TE_SCPN_uORF_plot <- ggplot(res_TE_SCPN_df, aes(x=log2FoldChange, color=uORF_status))+JF_theme+stat_ecdf(size=0.1)+facet_wrap(~contrast)+xlim(c(-2,2))+ylab("cumulative_fraction")+ggtitle("T.E. by uORF status, SCPN")+xlab("T.E.")+theme(legend.position="top")+geom_hline(yintercept=0.5,size=0.2)+geom_vline(xintercept=0, size=0.2)
 TE_SCPN_uORF_plot
 
+TE_SCPN_shared_uORF_plot <- ggplot(res_TE_SCPN_df, aes(x=log2FoldChange, color=uORF_shared))+JF_theme+stat_ecdf(size=0.1)+facet_wrap(~contrast)+xlim(c(-2,2))+ylab("cumulative_fraction")+ggtitle("T.E. by uORF status, SCPN")+xlab("T.E.")+theme(legend.position="top")+geom_hline(yintercept=0.5,size=0.2)+geom_vline(xintercept=0, size=0.2)
+TE_SCPN_shared_uORF_plot
 
 TE_distros_for_GO_ID <- function(CPN_df, SCPN_df, GO_IDs, allGO=ensembl_to_allGO, GO_name) {
   GO_ID_genes <- filter(allGO, go_id %in% GO_IDs)
   CPN_df <- CPN_df %>% mutate(gene_set=case_when(
     (Geneid %in% GO_ID_genes$ensembl_id)==T ~ GO_name,
     (Geneid %in% GO_ID_genes$ensembl_id)==F ~ paste("not",GO_name, sep="_")
+  )) %>% mutate(uORF_simple=case_when(
+    uORF_shared == "uORF" ~ "uORF",
+    uORF_shared == "Overlap_uORF" ~ "uORF",
+    T ~ "no_uORF"
   ))
   SCPN_df <- SCPN_df %>% mutate(gene_set=case_when(
     (Geneid %in% GO_ID_genes$ensembl_id)==T ~ GO_name,
     (Geneid %in% GO_ID_genes$ensembl_id)==F ~ paste("not",GO_name, sep="_")
+  )) %>% mutate(uORF_simple=case_when(
+    uORF_shared == "uORF" ~ "uORF",
+    uORF_shared == "Overlap_uORF" ~ "uORF",
+    T ~ "no_uORF"
   ))
   CPN_GO_plot <- ggplot(CPN_df, aes(x=log2FoldChange, color=interaction( uORF_simple,gene_set)))+JF_theme+stat_ecdf(size=0.1)+xlim(c(-2,2))+ylab("cumulative_fraction")+ggtitle("T.E. by uORF status, CPN")+xlab("T.E.")+geom_hline(yintercept=0.5, size=0.2)+geom_vline(xintercept=0, size=0.2)+theme(legend.position = "top")
   SCPN_GO_plot <- ggplot(SCPN_df, aes(x=log2FoldChange, color=interaction( uORF_simple,gene_set)))+JF_theme+stat_ecdf(size=0.1)+xlim(c(-2,2))+ylab("cumulative_fraction")+ggtitle("T.E. by uORF status, SCPN")+xlab("T.E.")+geom_hline(yintercept=0.5, size=0.2)+geom_vline(xintercept=0, size=0.2)+theme(legend.position = "top")
@@ -1391,8 +1429,13 @@ TE_distros_for_GO_ID <- function(CPN_df, SCPN_df, GO_IDs, allGO=ensembl_to_allGO
 }
 
 synapse_organization_TE_plots <- TE_distros_for_GO_ID(CPN_df = res_TE_CPN_df, SCPN_df = res_TE_SCPN_df, GO_IDs="GO:0050808", GO_name="Synapse_Org")
+#Can get a full res with uORF and GO-term status by pulling the data out from the ggplots
+synapse_organization_genes_res <- synapse_organization_TE_plots$CPN_plot$data %>% left_join(mouse_gene_symbols_wGeneid, by="Geneid") %>% filter(gene_set=="Synapse_Org")
+
 axonogenesis_TE_plots <- TE_distros_for_GO_ID(CPN_df = res_TE_CPN_df, SCPN_df = res_TE_SCPN_df, GO_IDs="GO:0007409", GO_name="Axonogenesis")
 axon_development_TE_plots <-  TE_distros_for_GO_ID(CPN_df = res_TE_CPN_df, SCPN_df = res_TE_SCPN_df, GO_IDs="GO:0061564", GO_name="Axon dev.")
+axon_development_genes_res <- axon_development_TE_plots$CPN_plot$data %>% left_join(mouse_gene_symbols_wGeneid, by="Geneid") %>% filter(gene_set=="Axon dev.")
+
 mRNA_processing_TE_plots <- TE_distros_for_GO_ID(CPN_df = res_TE_CPN_df, SCPN_df = res_TE_SCPN_df, GO_IDs="GO:0006397", GO_name="mRNA processing")
 RNP_biogenesis_TE_plots <-  TE_distros_for_GO_ID(CPN_df = res_TE_CPN_df, SCPN_df = res_TE_SCPN_df, GO_IDs="GO:0022613", GO_name="ribonucleoprotein complex biogenesis")
 synapse_assembly_TE_plots <- TE_distros_for_GO_ID(CPN_df = res_TE_CPN_df, SCPN_df = res_TE_SCPN_df, GO_IDs="GO:0007416", GO_name="synapse assembly")
@@ -1405,6 +1448,73 @@ TE_CPN_uORF_byQuntile_plot <- ggplot(res_TE_CPN_df, aes(x=log2FoldChange, color=
 
 ```
 
+```{r uORF_examples}
+
+TPMs_filtered_tidy <- TPMs_filtered %>% gather(key="samps",value="TPM",-Geneid) %>% left_join(experimentTypesPlus_mRNACounts, by="samps") %>% left_join(mouse_gene_symbols_wGeneid, by="Geneid") %>% mutate(exp=factor(exp),subtype=factor(subtype))
+
+
+plotGeneOfInterestCounts_TE_linear <- function(geneCounts, se=F) {
+  geneFacetPlot <- ggplot(geneCounts, aes(x=exp, y=TPM, color=factor(subtype)))+JF_theme+geom_point(alpha=0.5)+geom_smooth(method="lm", aes(x=as.numeric(exp),y=TPM), se=se)+facet_wrap(~external_gene_name, scales="free_y", nrow=1)+scale_color_manual(values=c("orange","blue"))+theme(strip.text = element_text(face="bold", size=7, margin=margin(c(0,0,0,0, "cm"))))
+}
+
+Nrxn_TE_plots <- plotGeneOfInterestCounts_TE_linear(filter(TPMs_filtered_tidy, external_gene_name %in% c("Nrxn1","Nrxn2")))
+Nlgn_TE_plots <- plotGeneOfInterestCounts_TE_linear(filter(TPMs_filtered_tidy, external_gene_name %in% c("Nlgn1","Nlgn2","Nlgn3")))
+Sema_TE_plots <- plotGeneOfInterestCounts_TE_linear(filter(TPMs_filtered_tidy, external_gene_name %in% c("Sema4c","Sema4g","Sema6c","Sema6d"))) 
+
+psiteFrameORFPlotting <- function(res, gene, ORF, specific_transcript=NULL){
+  #function to take in a gene and an ORF type, and plot the number of Psites in each frame over each of the ORFs of the indicated type
+  res_filt <- res %>% 
+    filter(gene_name == gene & ORF_type == ORF ) %>%
+    mutate(dist_to_CDS = ORF_tstart - as.numeric(annotated_tstart)) %>%
+     mutate(tx_ID=transcript_id) %>%
+    dplyr::select(gene_name, ORF_type, ORF_tstart, Psites_sum_frame0, Psites_sum_frame1, Psites_sum_frame2, ORF_length, annotated_tstart, tx_ID, dist_to_CDS, subtype) %>%
+    gather(key="Frame", value="Counts",-gene_name,-ORF_type, -ORF_tstart,-ORF_length,-annotated_tstart,-tx_ID,-dist_to_CDS, -subtype) %>%
+    mutate(Frame=replace(Frame, Frame== "Psites_sum_frame0", 0)) %>%
+    mutate(Frame=replace(Frame, Frame== "Psites_sum_frame1", 1)) %>%
+    mutate(Frame=replace(Frame, Frame== "Psites_sum_frame2", 2))
+
+if (is.null(specific_transcript)==T) {
+  psiteFrameCounts_plot <- ggplot(res_filt, aes(x=Frame,y=Counts,fill=Frame))+geom_col()+facet_wrap(~subtype+dist_to_CDS)+theme(strip.text = element_text(face="bold", size=7, margin=margin(c(0,0,0,0, "cm"))),  legend.position = "none")+ggtitle(paste(gene, ORF, sep=" "))
+}
+else {
+  psiteFrameCounts_plot <- ggplot(filter(res_filt, tx_ID==specific_transcript), aes(x=Frame,y=Counts,fill=Frame))+geom_col()+facet_wrap(~subtype+dist_to_CDS)+theme(strip.text = element_text(face="bold", size=7, margin=margin(c(0,0,0,0, "cm"))),  legend.position = "none")+ggtitle(paste(gene, ORF, sep=" "))
+}
+  
+}
+
+uORF_res_sharedOnly <- filter(uORF_res, ORF_ID %in% uORF_shared | ORF_ID %in% Overlap_uORF_shared)
+
+Nrxn1beta_psiteFrames_plot <- psiteFrameORFPlotting(uORF_res_sharedOnly,"Nrxn1","uORF", specific_transcript="ENSMUST00000159778")+JF_theme
+Nrxn1beta_psiteFrames_plot
+
+Nrxn1alpha_psiteFrames_plot <- psiteFrameORFPlotting(uORF_res_sharedOnly,"Nrxn1","uORF", specific_transcript="ENSMUST00000160844")+JF_theme
+Nrxn1alpha_psiteFrames_plot
+
+Nrxn2_psiteFrames_plot <- psiteFrameORFPlotting(uORF_res_sharedOnly,"Nrxn2","uORF")+JF_theme
+Nrxn2_psiteFrames_plot
+
+Nlgn2_psiteFrames_plot <- psiteFrameORFPlotting(uORF_res_sharedOnly,"Nlgn2","uORF")+JF_theme
+Nlgn2_psiteFrames_plot
+
+Nlgn3_psiteFrames_plot <- psiteFrameORFPlotting(uORF_res_sharedOnly,"Nlgn3","uORF")+JF_theme
+Nlgn3_psiteFrames_plot
+
+Sema4g_psiteFrames_plot <- psiteFrameORFPlotting(uORF_res_sharedOnly,"Sema4g","uORF")+JF_theme
+Sema4g_psiteFrames_plot
+
+Sema4c_psiteFrames_plot <- psiteFrameORFPlotting(uORF_res_sharedOnly,"Sema4c","uORF")+JF_theme
+Sema4c_psiteFrames_plot
+
+Sema6c_psiteFrames_plot <- psiteFrameORFPlotting(uORF_res_sharedOnly,"Sema6c","uORF")+JF_theme
+Sema6c_psiteFrames_plot
+
+Sema6d_psiteFrames_plot <- psiteFrameORFPlotting(uORF_res_sharedOnly,"Sema6d","uORF")+JF_theme
+Sema6d_psiteFrames_plot
+
+
+```
+
+
 ```{r uORFs_figure}
 uORFs_figure <- ORF_types_plot / (TE_CPN_uORF_plot + TE_SCPN_uORF_plot) / (uORF_ego_barplot$CPN_uORFs + uORF_ego_barplot$SCPN_uORFs) / (synapse_assembly_TE_plots$CPN_plot + synapse_assembly_TE_plots$SCPN_plot) + plot_annotation(tag_levels = list(c("A","B","C","D","E","F","G","H"))) & theme(plot.tag=element_text(size=12, face="bold"))+theme(legend.key.size=unit(0.5,"line"))
 pdfName=paste(outDir, "uORF_fig.pdf", sep="/")
@@ -1412,6 +1522,35 @@ pdf(file=pdfName, width=6.5, height=9)
 plot(uORFs_figure)
 dev.off()
 ```
+```{r uORFs_alt_figure}
+uORFs_layout <-
+  'AAAAABBB
+   CCCCDDDD
+   #EEEEEEE
+   FFFFGGGG
+   HHHHIIII
+  '
+uORF_alt_figure <-  ORF_types_plot+uORF_shared_col_plot + TE_CPN_shared_uORF_plot + TE_SCPN_shared_uORF_plot + uORF_ego_barplot$uORF_shared + synapse_organization_TE_plots$CPN_plot+ synapse_organization_TE_plots$SCPN_plot + axon_development_TE_plots$CPN_plot+axon_development_TE_plots$SCPN_plot+plot_layout(design=uORFs_layout)+plot_annotation(tag_levels = list(c("A","B","C","D","E","F","G","H","I"))) & theme(plot.tag=element_text(size=12, face="bold"))+theme(legend.key.size=unit(0.5,"line"))
+
+# uORF_alt_figure <-  (ORF_types_plot+uORF_shared_col_plot) / (TE_CPN_shared_uORF_plot + TE_SCPN_shared_uORF_plot) / (uORF_ego_barplot$uORF_shared) / (synapse_organization_TE_plots$CPN_plot+ synapse_organization_TE_plots$SCPN_plot) /(axon_development_TE_plots$CPN_plot+axon_development_TE_plots$SCPN_plot)+plot_layout(design=uORFs_layout)+plot_annotation(tag_levels = list(c("A","B","C","D","E","F","G","H","I"))) & theme(plot.tag=element_text(size=12, face="bold"))+theme(legend.key.size=unit(0.5,"line"))
+
+pdfName=paste(outDir, "uORF_alt_fig.pdf", sep="/")
+pdf(file=pdfName, width=6.5, height=9)
+plot(uORF_alt_figure)
+dev.off()
+
+```
+
+```{r uORF_example_fig}
+uORF_example_fig <- (Sema_TE_plots) / (Sema4c_psiteFrames_plot | Sema4g_psiteFrames_plot | Sema6c_psiteFrames_plot | Sema6d_psiteFrames_plot) / (Nlgn_TE_plots) / (Nlgn2_psiteFrames_plot+Nlgn3_psiteFrames_plot) / (Nrxn_TE_plots) / (Nrxn1alpha_psiteFrames_plot+Nrxn1beta_psiteFrames_plot) / (Nrxn2_psiteFrames_plot+plot_spacer())+plot_layout(heights=c(1,2,1,2,1,2,2))+ plot_annotation(tag_levels = list(c("A","B","C","D","E","F","G","H","I","J","K"))) & theme(plot.tag=element_text(size=12, face="bold"))
+
+pdfName=paste(outDir, "uORF_example_fig.pdf", sep="/")
+pdf(file=pdfName, width=6.5, height=9)
+plot(uORF_example_fig)
+dev.off()
+
+```
+
 
 ###Run RiboWaltz to evaluate 3-nt periodicity in the data sets. 
 ###Requires a directory of transcriptome-aligned BamFiles and a gtf
