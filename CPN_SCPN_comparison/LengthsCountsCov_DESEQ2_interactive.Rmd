@@ -1262,6 +1262,47 @@ plot(withinSubtypeTE)
 dev.off()
 
 ```
+
+```{r motif_analyis}
+#Take the longest UTR out of the ones listed, so there is just one sequence for each Geneid
+#Also filter for Length > 10; I had this in the old code from 2021 might be a min length filter for STREME
+five_utr_longest_bed <- read.table("five_prime_utr.bed", header=T) %>% mutate(Length=end-start) %>% group_by(Geneid) %>% slice_max(n=1, order_by=Length) %>% filter(Length > 10)
+three_utr_longest_bed <- read.table("three_prime_utr.bed", header=T) %>% mutate(Length=end-start) %>% group_by(Geneid) %>% slice_max(n=1, order_by=Length) %>% filter(Length > 10)
+
+CPNandSCPN_TE_high <- intersect(SCPN_TE_high, CPN_TE_high)
+CPNandSCPN_TE_low <- intersect(SCPN_TE_low, CPN_TE_low)
+
+CPNandSCPN_TE_high_longest_5UTR.bed <- five_utr_longest_bed %>% filter(Geneid %in% CPNandSCPN_TE_high)
+CPNandSCPN_TE_low_longest_5UTR.bed <- five_utr_longest_bed %>% filter(Geneid %in% CPNandSCPN_TE_low )
+CPNandSCPN_TE_high_longest_3UTR.bed <- three_utr_longest_bed %>% filter(Geneid %in% CPNandSCPN_TE_high )
+CPNandSCPN_TE_low_longest_3UTR.bed <- three_utr_longest_bed %>% filter(Geneid %in% CPNandSCPN_TE_low )
+
+writeBedFile <- function(bedFile) {
+  bedOut<- data.frame(chr=bedFile$chr, start=bedFile$start, end=bedFile$end, name=bedFile$Geneid, score=bedFile$score, strand=bedFile$strand)
+  outname=deparse(substitute(bedFile))
+  write.table(bedOut, file=outname, row.names = F, col.names = F, quote=F, sep="\t")
+}
+
+writeBedFile(CPNandSCPN_TE_high_longest_5UTR.bed)
+writeBedFile(CPNandSCPN_TE_low_longest_5UTR.bed)
+writeBedFile(CPNandSCPN_TE_high_longest_3UTR.bed)
+writeBedFile(CPNandSCPN_TE_low_longest_3UTR.bed)
+
+five_utr_bed <- read.table("five_prime_utr.bed", header=T) %>% mutate(Length=end-start) %>% group_by(Geneid)  %>% filter(Length > 10)
+three_utr_bed <- read.table("three_prime_utr.bed", header=T) %>% mutate(Length=end-start) %>% group_by(Geneid) %>% filter(Length > 10)
+
+
+CPNandSCPN_TE_high_5UTR.bed <- five_utr_bed %>% filter(Geneid %in% CPNandSCPN_TE_high)
+CPNandSCPN_TE_low_5UTR.bed <- five_utr_bed %>% filter(Geneid %in% CPNandSCPN_TE_low )
+CPNandSCPN_TE_high_3UTR.bed <- three_utr_bed %>% filter(Geneid %in% CPNandSCPN_TE_high )
+CPNandSCPN_TE_low_3UTR.bed <- three_utr_bed %>% filter(Geneid %in% CPNandSCPN_TE_low )
+
+writeBedFile(CPNandSCPN_TE_high__5UTR.bed)
+writeBedFile(CPNandSCPN_TE_low__5UTR.bed)
+writeBedFile(CPNandSCPN_TE_high__3UTR.bed)
+writeBedFile(CPNandSCPN_TE_low__3UTR.bed)
+```
+
 ```{r uORFs}
 CPN_ORFs_file="CPN_RiboCode/RiboCode_ORFs_collapsed.txt"
 SCPN_ORFs_file="SCPN_RiboCode/RiboCode_ORFs_collapsed.txt"
