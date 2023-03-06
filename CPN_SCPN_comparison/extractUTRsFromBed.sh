@@ -14,11 +14,12 @@ if [[ $mode == "extract" ]]; then
 
 mkdir extracted_utrs
 for anno in 5UTR 3UTR; do
-	for trans_cat in CPNandSCPN_TE_high_longest CPNandSCPN_TE_low_longest CPNandSCPN_TE_high CPNandSCPN_TE_low; do
+	for trans_cat in longest CPNandSCPN_TE_high_longest CPNandSCPN_TE_low_longest CPNandSCPN_TE_high CPNandSCPN_TE_low; do
 		echo "${anno}_${trans_cat}"
 		bedtools sort -i ${trans_cat}_${anno}.bed > ${anno}_${trans_cat}.sorted.bed
-		bedtools merge -i ${anno}_${trans_cat}.sorted.bed -s > ${anno}_${trans_cat}_merged.bed
-		bedtools getfasta -s -name -fi mm10_nucMT.fa -bed ${anno}_${trans_cat}_merged.bed > extracted_utrs/${anno}_${trans_cat}.fasta
+		#bedtools merge -i ${anno}_${trans_cat}.sorted.bed -s > ${anno}_${trans_cat}_merged.bed
+		bedtools getfasta -s -name -fi mm10_nucMT.fa -bed ${anno}_${trans_cat}.sorted.bed > extracted_utrs/${anno}_${trans_cat}.fasta
+		#bedtools getfasta -s -nameOnly -fi mm10_nucMT.fa -bed ${anno}_${trans_cat}_merged.bed > extracted_utrs/${anno}_${trans_cat}.fasta
 	done
 done
 fi

@@ -1266,22 +1266,27 @@ dev.off()
 ```{r motif_analyis}
 #Take the longest UTR out of the ones listed, so there is just one sequence for each Geneid
 #Also filter for Length > 10; I had this in the old code from 2021 might be a min length filter for STREME
-five_utr_longest_bed <- read.table("five_prime_utr.bed", header=T) %>% mutate(Length=end-start) %>% group_by(Geneid) %>% slice_max(n=1, order_by=Length) %>% filter(Length > 10)
-three_utr_longest_bed <- read.table("three_prime_utr.bed", header=T) %>% mutate(Length=end-start) %>% group_by(Geneid) %>% slice_max(n=1, order_by=Length) %>% filter(Length > 10)
+five_utr_longest.bed <- read.table("five_prime_utr.bed", header=T) %>% mutate(Length=end-start) %>% group_by(Geneid) %>% slice_max(n=1, order_by=Length) %>% filter(Length > 10)
+three_utr_longest.bed <- read.table("three_prime_utr.bed", header=T) %>% mutate(Length=end-start) %>% group_by(Geneid) %>% slice_max(n=1, order_by=Length) %>% filter(Length > 10)
 
 CPNandSCPN_TE_high <- intersect(SCPN_TE_high, CPN_TE_high)
 CPNandSCPN_TE_low <- intersect(SCPN_TE_low, CPN_TE_low)
 
-CPNandSCPN_TE_high_longest_5UTR.bed <- five_utr_longest_bed %>% filter(Geneid %in% CPNandSCPN_TE_high)
-CPNandSCPN_TE_low_longest_5UTR.bed <- five_utr_longest_bed %>% filter(Geneid %in% CPNandSCPN_TE_low )
-CPNandSCPN_TE_high_longest_3UTR.bed <- three_utr_longest_bed %>% filter(Geneid %in% CPNandSCPN_TE_high )
-CPNandSCPN_TE_low_longest_3UTR.bed <- three_utr_longest_bed %>% filter(Geneid %in% CPNandSCPN_TE_low )
+CPNandSCPN_TE_high_longest_5UTR.bed <- five_utr_longest.bed %>% filter(Geneid %in% CPNandSCPN_TE_high)
+CPNandSCPN_TE_low_longest_5UTR.bed <- five_utr_longest.bed %>% filter(Geneid %in% CPNandSCPN_TE_low )
+CPNandSCPN_TE_high_longest_3UTR.bed <- three_utr_longest.bed %>% filter(Geneid %in% CPNandSCPN_TE_high )
+CPNandSCPN_TE_low_longest_3UTR.bed <- three_utr_longest.bed %>% filter(Geneid %in% CPNandSCPN_TE_low )
 
 writeBedFile <- function(bedFile) {
   bedOut<- data.frame(chr=bedFile$chr, start=bedFile$start, end=bedFile$end, name=bedFile$Geneid, score=bedFile$score, strand=bedFile$strand)
   outname=deparse(substitute(bedFile))
   write.table(bedOut, file=outname, row.names = F, col.names = F, quote=F, sep="\t")
 }
+
+longest_5UTR.bed <- five_utr_longest.bed
+longest_3UTR.bed <- three_utr_longest.bed
+writeBedFile(longest_5UTR.bed)
+writeBedFile(longest_3UTR.bed)
 
 writeBedFile(CPNandSCPN_TE_high_longest_5UTR.bed)
 writeBedFile(CPNandSCPN_TE_low_longest_5UTR.bed)
@@ -1302,6 +1307,45 @@ writeBedFile(CPNandSCPN_TE_low__5UTR.bed)
 writeBedFile(CPNandSCPN_TE_high__3UTR.bed)
 writeBedFile(CPNandSCPN_TE_low__3UTR.bed)
 ```
+
+#run transite if UTR fastqs are extracted
+```{r transite_analysis}
+
+five_utr.fasta <- "extracted_utrs/5UTR_longest.fasta"
+three_utr.fasta <- "extracted_utrs/3UTR_longest.fasta"
+
+if (file.exists(five_utr.fasta)==T & file.exists(three_utr.fasta)==T) {
+  five_utr_seqs <- readDNAStringSet(five_utr.fasta)
+  three_utr_seqs <- readDNAStringSet(three_utr.fasta)
+  five_utr_seq_df <- data.frame(seq=five_utr_seqs, Geneid=str_extract(names(five_utr_seqs), regex("ENSMUSG[0-9]+")), seqtype="5'-UTR") %>% mutate(seq=gsub("T","U", seq))
+  three_utr_seq_df <- data.frame(seq=three_utr_seqs, Geneid=str_extract(names(three_utr_seqs), regex("ENSMUSG[0-9]+")), seqtype="3'-UTR") %>% mutate(seq=gsub("T","U", seq))
+  
+res2transite_input <- function(res, seq_df) {
+  TS_input <- res %>% left_join(seq_df, by="Geneid") %>% mutate(refSeq=Geneid, value=log2FoldChange) %>% dplyr::select(refSeq, value, seqtype, seq) %>% filter(is.na(seq)==F & grepl("N",seq)==F) %>% arrange(desc(value))
+}
+
+TE_CPN_transite_input_5UTR <- res2transite_input(res=res_TE_CPN_df, seq_df = five_utr_seq_df)
+TE_CPN_transite_5UTR <- run_matrix_spma(sorted_transcript_sequences=TE_CPN_transite_input_5UTR$seq, sorted_transcript_values=TE_CPN_transite_input_5UTR$value, transcript_values_label = "T.E. CPN", cache=F, n_cores=8 )
+TE_CPN_transite_input_3UTR <- res2transite_input(res=res_TE_CPN_df, seq_df = three_utr_seq_df)
+TE_CPN_transite_3UTR <- run_matrix_spma(sorted_transcript_sequences=TE_CPN_transite_input_3UTR$seq, sorted_transcript_values=TE_CPN_transite_input_3UTR$value, transcript_values_label = "T.E. CPN", cache=F, n_cores=8 )
+TE_SCPN_transite_input_3UTR <- res2transite_input(res=res_TE_SCPN_df, seq_df = three_utr_seq_df)
+TE_SCPN_transite_3UTR <- run_matrix_spma(sorted_transcript_sequences=TE_SCPN_transite_input_3UTR$seq, sorted_transcript_values=TE_SCPN_transite_input_3UTR$value, transcript_values_label = "T.E. SCPN", cache=F, n_cores=8 )
+
+
+  # TE_CPN_transite_input_5UTR <- res_TE_CPN_df %>% left_join(five_utr_seq_df, by="Geneid") %>% mutate(refSeq=Geneid, value=log2FoldChange) %>% dplyr::select(refSeq, value, seqtype, seq)
+  # 
+  
+  
+  
+  
+} else {
+  warning("run extractUTRsFromBed in order to run transite")
+}
+
+
+```
+
+
 
 ```{r uORFs}
 CPN_ORFs_file="CPN_RiboCode/RiboCode_ORFs_collapsed.txt"
@@ -1435,6 +1479,22 @@ res_diffTE_df <- res_diffTE_df %>% mutate(uORF_status=case_when(
 TE_CPN_uORF_plot <- ggplot(res_TE_CPN_df, aes(x=log2FoldChange, color=uORF_status))+JF_theme+stat_ecdf(size=0.1)+facet_wrap(~contrast)+xlim(c(-2,2))+ylab("cumulative_fraction")+ggtitle("T.E. by uORF status, CPN")+xlab("T.E.")+theme(legend.position="top")+geom_hline(yintercept=0.5,size=0.2)+geom_vline(xintercept=0, size=0.2)
 TE_CPN_uORF_plot
 
+meanAndTest <- function(x, y) {
+  theTest <- wilcox.test(x,y)
+  mean_x <- mean(x)
+  mean_y <- mean(y)
+  returnList <- list("test"=theTest, "mean_x"=mean_x,"mean_y"=mean_y)
+}
+
+TE_CPN_noVsuORF.test <- meanAndTest(filter(res_TE_CPN_df, uORF_status=="CPN_uORF" & uORF_shared=="uORF")$log2FoldChange, filter(res_TE_CPN_df,  uORF_shared=="no_shared_uORF")$log2FoldChange)
+
+TE_SCPN_noVsuORF.test <- meanAndTest(filter(res_TE_SCPN_df, uORF_status=="SCPN_uORF" & uORF_shared=="uORF")$log2FoldChange, filter(res_TE_SCPN_df,  uORF_shared=="no_shared_uORF")$log2FoldChange)
+
+TE_CPN_noVsOverlap_uORF.test <- meanAndTest(filter(res_TE_CPN_df, uORF_status=="CPN_Overlap_uORF" & uORF_shared=="Overlap_uORF")$log2FoldChange, filter(res_TE_CPN_df,  uORF_shared=="no_shared_uORF")$log2FoldChange)
+
+TE_SCPN_noVsuOverlap_ORF.test <- meanAndTest(filter(res_TE_SCPN_df, uORF_status=="SCPN_Overlap_uORF" & uORF_shared=="Overlap_uORF")$log2FoldChange, filter(res_TE_SCPN_df,  uORF_shared=="no_shared_uORF")$log2FoldChange)
+
+
 
 TE_CPN_shared_uORF_plot <- ggplot(res_TE_CPN_df, aes(x=log2FoldChange, color=uORF_shared))+JF_theme+stat_ecdf(size=0.1)+facet_wrap(~contrast)+xlim(c(-2,2))+ylab("cumulative_fraction")+ggtitle("T.E. by uORF status, CPN")+xlab("T.E.")+theme(legend.position="top")+geom_hline(yintercept=0.5,size=0.2)+geom_vline(xintercept=0, size=0.2)
 TE_CPN_shared_uORF_plot
@@ -1465,13 +1525,18 @@ TE_distros_for_GO_ID <- function(CPN_df, SCPN_df, GO_IDs, allGO=ensembl_to_allGO
   ))
   CPN_GO_plot <- ggplot(CPN_df, aes(x=log2FoldChange, color=interaction( uORF_simple,gene_set)))+JF_theme+stat_ecdf(size=0.1)+xlim(c(-2,2))+ylab("cumulative_fraction")+ggtitle("T.E. by uORF status, CPN")+xlab("T.E.")+geom_hline(yintercept=0.5, size=0.2)+geom_vline(xintercept=0, size=0.2)+theme(legend.position = "top")
   SCPN_GO_plot <- ggplot(SCPN_df, aes(x=log2FoldChange, color=interaction( uORF_simple,gene_set)))+JF_theme+stat_ecdf(size=0.1)+xlim(c(-2,2))+ylab("cumulative_fraction")+ggtitle("T.E. by uORF status, SCPN")+xlab("T.E.")+geom_hline(yintercept=0.5, size=0.2)+geom_vline(xintercept=0, size=0.2)+theme(legend.position = "top")
-  return_list <- list("CPN_plot"=CPN_GO_plot, "SCPN_plot"=SCPN_GO_plot)
+  CPN_filt <- filter(CPN_df, gene_set==GO_name)
+  SCPN_filt <- filter(SCPN_df, gene_set==GO_name)
+  CPN_test <- meanAndTest(filter(CPN_filt, uORF_simple =="uORF")$log2FoldChange,filter(CPN_filt, uORF_simple =="no_uORF")$log2FoldChange)
+   SCPN_test <- meanAndTest(filter(SCPN_filt, uORF_simple =="uORF")$log2FoldChange,filter(SCPN_filt, uORF_simple =="no_uORF")$log2FoldChange)
+  return_list <- list("CPN_plot"=CPN_GO_plot, "SCPN_plot"=SCPN_GO_plot, "CPN_test"=CPN_test,"SCPN_test"=SCPN_test)
   return(return_list)
 }
 
 synapse_organization_TE_plots <- TE_distros_for_GO_ID(CPN_df = res_TE_CPN_df, SCPN_df = res_TE_SCPN_df, GO_IDs="GO:0050808", GO_name="Synapse_Org")
 #Can get a full res with uORF and GO-term status by pulling the data out from the ggplots
 synapse_organization_genes_res <- synapse_organization_TE_plots$CPN_plot$data %>% left_join(mouse_gene_symbols_wGeneid, by="Geneid") %>% filter(gene_set=="Synapse_Org")
+
 
 axonogenesis_TE_plots <- TE_distros_for_GO_ID(CPN_df = res_TE_CPN_df, SCPN_df = res_TE_SCPN_df, GO_IDs="GO:0007409", GO_name="Axonogenesis")
 axon_development_TE_plots <-  TE_distros_for_GO_ID(CPN_df = res_TE_CPN_df, SCPN_df = res_TE_SCPN_df, GO_IDs="GO:0061564", GO_name="Axon dev.")
