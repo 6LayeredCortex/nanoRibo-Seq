@@ -411,6 +411,11 @@ makeCorePheatmaps <- function(TPMs_tidy, displayNums=T, mainTitle="heatmap", w=6
 }
 
 nanoLi_TPMs_tidy_filt <- nanoLi_TPMs_raw_filt %>% gather(key="samps",value="TPM", -Geneid) %>% left_join(nanoLi_expTypes, by="samps")
+
+#write TPMs as processed output
+write.csv(nanoLi_TPMs_raw_filt , file="HEK_TPMs.csv",quote=F,row.names = F)
+
+
 #make sampNames more descriptive
 nanoLi_TPMs_tidy_filt_newSamps <- nanoLi_TPMs_tidy_filt %>% mutate(samps=case_when(
   method=="Ingolia" | method=="LiRiboSeq" ~ paste(method, samps, sep="_"),

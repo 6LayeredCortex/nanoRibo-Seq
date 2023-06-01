@@ -47,26 +47,26 @@ rule RiboCode:
 		cp "RiboCode_ORFs_collapsed.txt" {output.RiboCodeOut}
 		"""
 #run ribotracer as a second method for calling ORFs. 
-rule ribotricer:
-	input:
-		bams=expand(["{bamPath}/{sample}.Aligned.sortedByCoord.out.dedup.bam"], sample=config["samples"], bamPath=config["bamPath"]),
-	output:
-		ORF_file="mm10_candidate_orfs.tsv",
-		cat_bam="concatenated.bam",
-	params:
-		gtf=config["ribotricer"]["gtf"],
-		fasta=config["ribotricer"]["fasta"],
-		start_codons=config["ribotricer"]["start_codons"],
-		min_orf_length=config["ribotricer"]["min_orf_length"],
-		cutoff=config["ribotricer"]["cutoff"],
-		min_codons_valid_ratio=config["ribotricer"]["min_codons_valid_ratio"],	
-		ribotracer_out="ribotracer_detected_ORFs",
-		prefix="prepare-orfs_out",
-	shell:
-		"""module load samtools/1.5-fasrc02;
-		samtools merge {output.cat_bam} {input.bams};
-		source activate ribotricer_env;
-		ribotricer prepare-orfs --gtf {params.gtf} --fasta {params.fasta} --prefix {params.prefix} --min_orf_length {params.min_orf_length} --start_codons {params.start_codons};
-		mv {params.prefix}_candidate_orfs.tsv {output.ORF_file};
-		ribotricer detect-orfs --bam {output.cat_bam} --ribotricer_index {output.ORF_file} --prefix {params.ribotracer_out} --min_valid_codons_ratio {params.min_codons_valid_ratio} --phase_score_cutoff {params.cutoff}
-		"""
+#rule ribotricer:
+#	input:
+#		bams=expand(["{bamPath}/{sample}.Aligned.sortedByCoord.out.dedup.bam"], sample=config["samples"], bamPath=config["bamPath"]),
+#	output:
+#		ORF_file="mm10_candidate_orfs.tsv",
+#		cat_bam="concatenated.bam",
+#	params:
+#		gtf=config["ribotricer"]["gtf"],
+#		fasta=config["ribotricer"]["fasta"],
+#		start_codons=config["ribotricer"]["start_codons"],
+#		min_orf_length=config["ribotricer"]["min_orf_length"],
+#		cutoff=config["ribotricer"]["cutoff"],
+#		min_codons_valid_ratio=config["ribotricer"]["min_codons_valid_ratio"],	
+#		ribotracer_out="ribotracer_detected_ORFs",
+#		prefix="prepare-orfs_out",
+#	shell:
+#		"""module load samtools/1.5-fasrc02;
+#		samtools merge {output.cat_bam} {input.bams};
+#		source activate ribotricer_env;
+#		ribotricer prepare-orfs --gtf {params.gtf} --fasta {params.fasta} --prefix {params.prefix} --min_orf_length {params.min_orf_length} --start_codons {params.start_codons};
+#		mv {params.prefix}_candidate_orfs.tsv {output.ORF_file};
+#		ribotricer detect-orfs --bam {output.cat_bam} --ribotricer_index {output.ORF_file} --prefix {params.ribotracer_out} --min_valid_codons_ratio {params.min_codons_valid_ratio} --phase_score_cutoff {params.cutoff}
+#		"""

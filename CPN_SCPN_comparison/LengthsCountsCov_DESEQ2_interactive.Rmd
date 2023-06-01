@@ -435,6 +435,9 @@ DESeq2_counts_matrix <- featureCounts_tidy_sampFilt %>%
     spread("samps","counts") %>%
     filter(Geneid %in% TPMs_sampFilt$Geneid)
 
+#write DESeq2 counts matrix as output:
+write.csv(DESeq2_counts_matrix, file="CPN_SCPN_DESeq2_counts_matrix.csv", quote=F, row.names=F)
+
 rownames(DESeq2_counts_matrix) <- DESeq2_counts_matrix$Geneid
 DESeq2_counts_matrix <- dplyr::select(DESeq2_counts_matrix, -Geneid)
 colData <- dplyr::select(experimentTypes_sampFilt, samps, exp,subtype)
